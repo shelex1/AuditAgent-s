@@ -1,0 +1,47 @@
+# Fill in your 5-model council. Every member is used in every debate round.
+# Role values: security-paranoid | pragmatic-engineer | adversarial-critic | code-quality | refactorer
+
+[[members]]
+name = "model-1"
+model = "provider/model-id:free"
+role = "security-paranoid"
+timeout = 90
+
+[[members]]
+name = "model-2"
+model = "provider/model-id:free"
+role = "pragmatic-engineer"
+timeout = 60
+
+[[members]]
+name = "model-3"
+model = "provider/model-id:free"
+role = "adversarial-critic"
+timeout = 60
+
+[[members]]
+name = "model-4"
+model = "provider/model-id:free"
+role = "code-quality"
+timeout = 60
+
+[[members]]
+name = "model-5"
+model = "provider/model-id:free"
+role = "refactorer"
+timeout = 60
+
+[cartographer]
+model = "provider/fast-model:free"
+timeout = 120
+
+[limits]
+max_files_scan = 50
+max_additional_file_requests = 3
+debate_timeout = 180
+per_member_timeout_fallback = 90
+cache_ttl_seconds = 600
+max_file_size_bytes = 51200
+
+[openrouter]
+base_url = "https://openrouter.ai/api/v1"
