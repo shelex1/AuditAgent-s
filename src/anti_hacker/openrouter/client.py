@@ -102,5 +102,6 @@ class OpenRouterClient:
             if attempt < self._max_retries - 1:
                 await asyncio.sleep(self._retry_backoff(attempt))
 
-        assert last_exc is not None
+        if last_exc is None:
+            raise OpenRouterError("retry loop exited without an exception (unreachable)")
         raise last_exc
