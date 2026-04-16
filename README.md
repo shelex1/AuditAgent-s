@@ -21,3 +21,19 @@ Python MCP server that coordinates 5 free OpenRouter models through 3 debate rou
    ```
 
 See `docs/superpowers/specs/2026-04-16-anti-hacker-council-design.md` for design details.
+
+## First Run
+
+After install, before first MCP use:
+
+1. Fill in `config/council.toml` with your 5 model IDs and roles.
+2. Set `OPENROUTER_API_KEY` in `.env`.
+3. Run the smoke test to verify every model responds:
+   ```
+   python scripts/smoke_test.py
+   ```
+4. Run the full test suite:
+   ```
+   pytest
+   ```
+5. Register in Claude Code MCP config and restart the CLI.
