@@ -190,3 +190,56 @@ async def test_empty_choices_raises_malformed() -> None:
     with pytest.raises(OpenRouterError, match="malformed"):
         await client.chat(model="x", system="s", user="u", timeout=10)
 
+
+# ---------------------------------------------------------------------------
+# Fix 3: respect Retry-After header on 429
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_429_honors_retry_after() -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(asyncio.get_event_loop().time())
+        if len(calls) == 1:
+            return httpx.Response(429, headers={"retry-after": "0.02"}, json={"e": "rl"})
+        return httpx.Response(200, json=chat_completion("ok"))
+
+    client = OpenRouterClient(
+        api_key="sk-test",
+        base_url="https://openrouter.ai/api/v1",
+        transport=httpx.MockTransport(handler),
+        retry_backoff=lambda a: 10.0,  # would be 10s; Retry-After should override
+    )
+    resp = await client.chat(model="x", system="s", user="u", timeout=5)
+    assert resp.text == "ok"
+    # The second call was after retry-after (~0.02s), NOT after retry_backoff (10s)
+    assert calls[1] - calls[0] < 1.0
+
+
+@pytest.mark.asyncio
+async def test_429_without_retry_after_uses_default_backoff() -> None:
+    calls = {"n": 0}
+    backoff_called = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, json={"e": "rl"})  # no Retry-After
+        return httpx.Response(200, json=chat_completion("ok"))
+
+    def backoff(attempt: int) -> float:
+        backoff_called["n"] += 1
+        return 0
+
+    client = OpenRouterClient(
+        api_key="sk-test",
+        base_url="https://openrouter.ai/api/v1",
+        transport=httpx.MockTransport(handler),
+        retry_backoff=backoff,
+    )
+    resp = await client.chat(model="x", system="s", user="u", timeout=5)
+    assert resp.text == "ok"
+    assert backoff_called["n"] >= 1  # default backoff was consulted
+
