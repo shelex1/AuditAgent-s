@@ -18,10 +18,11 @@ from .tools.consult import ConsultService
 logger = logging.getLogger("anti_hacker")
 
 
-def _make_services(project_root: Path, data_root: Path) -> tuple[ConsultService, "ScanService", "InvestigateService"]:
+def _make_services(project_root: Path, data_root: Path) -> tuple[ConsultService, "ScanService", "InvestigateService", "LogService"]:
     from .scanners.cartographer import Cartographer
     from .tools.scan import ScanService
     from .tools.investigate import InvestigateService
+    from .tools.logs import LogService
     config_path = Path(os.getenv("ANTI_HACKER_CONFIG", project_root / "config" / "council.toml"))
     cfg = load_config(config_path)
     client = OpenRouterClient(api_key=cfg.api_key, base_url=cfg.openrouter.base_url)
@@ -30,12 +31,13 @@ def _make_services(project_root: Path, data_root: Path) -> tuple[ConsultService,
     cart = Cartographer(client=client, model=cfg.cartographer.model, timeout=cfg.cartographer.timeout)
     scan = ScanService(cartographer=cart, consult=consult, project_root=project_root)
     investigate = InvestigateService(consult=consult)
-    return consult, scan, investigate
+    logs = LogService(data_root=data_root)
+    return consult, scan, investigate, logs
 
 
 def build_server(project_root: Path, data_root: Path) -> Server:
     server = Server("anti-hacker")
-    consult, scan, investigate = _make_services(project_root=project_root, data_root=data_root)
+    consult, scan, investigate, logs = _make_services(project_root=project_root, data_root=data_root)
 
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:
@@ -79,6 +81,16 @@ def build_server(project_root: Path, data_root: Path) -> Server:
                     },
                 },
             ),
+            types.Tool(
+                name="get_debate_log",
+                description="Return the full JSON log for a given debate_id.",
+                inputSchema={"type": "object", "required": ["debate_id"], "properties": {"debate_id": {"type": "string"}}},
+            ),
+            types.Tool(
+                name="list_proposals",
+                description="List all .patch files awaiting manual apply with their metadata.",
+                inputSchema={"type": "object", "properties": {}},
+            ),
         ]
 
     @server.call_tool()
@@ -108,6 +120,16 @@ def build_server(project_root: Path, data_root: Path) -> Server:
             )
             import json
             return [types.TextContent(type="text", text=json.dumps(report, ensure_ascii=False, indent=2))]
+        if name == "get_debate_log":
+            import json
+            payload = logs.get_debate_log(arguments["debate_id"])
+            return [types.TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, indent=2))]
+
+        if name == "list_proposals":
+            import json
+            payload = logs.list_proposals()
+            return [types.TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, indent=2))]
+
         raise ValueError(f"unknown tool: {name}")
 
     return server
