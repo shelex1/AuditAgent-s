@@ -21,8 +21,9 @@ async def _probe(client: OpenRouterClient, model: str, timeout: int) -> tuple[st
             user="ping",
             timeout=timeout,
         )
-        ok = "ok" in resp.text.lower()
-        return model, ok, resp.text[:80]
+        text = resp.text or ""
+        ok = "ok" in text.lower()
+        return model, ok, text[:80] if text else "<empty>"
     except Exception as exc:
         return model, False, str(exc)
 

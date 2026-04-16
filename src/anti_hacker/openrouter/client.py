@@ -89,8 +89,16 @@ class OpenRouterClient:
                     data = r.json()
                     choices = data.get("choices") or []
                     if not choices:
+                        if use_json_mode:
+                            use_json_mode = False
+                            continue
                         raise OpenRouterError("malformed response: empty choices")
-                    content = choices[0]["message"]["content"]
+                    content = choices[0]["message"].get("content")
+                    if not content:
+                        if use_json_mode:
+                            use_json_mode = False
+                            continue
+                        raise OpenRouterError("malformed response: empty content")
                     return OpenRouterResponse(text=content, model=model)
                 if r.status_code == 400 and use_json_mode:
                     # Some free models reject response_format; retry without it

@@ -72,6 +72,8 @@ def test_load_valid_config(tmp_path: Path, monkeypatch) -> None:
 def test_missing_api_key_raises(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "council.toml").write_text(VALID_TOML, encoding="utf-8")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    # Prevent load_dotenv from re-populating the env var from a real .env on disk
+    monkeypatch.setattr("anti_hacker.config.load_dotenv", lambda: None)
 
     with pytest.raises(ConfigError, match="OPENROUTER_API_KEY"):
         load_config(tmp_path / "council.toml")
