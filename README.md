@@ -2,6 +2,8 @@
 
 Python MCP server that coordinates 5 free OpenRouter models through 3 debate rounds and returns compact verdicts plus unified-diff patches for Claude Code to review.
 
+> **Status:** in-progress implementation. The `anti-hacker` command (step 5 below) becomes functional after the full server is wired up per the plan; until then, `pip install -e .[dev]` and `pytest` work, but launching the MCP server is not yet supported.
+
 ## Setup
 
 1. Install: `pip install -e .[dev]`
