@@ -18,9 +18,10 @@ from .tools.consult import ConsultService
 logger = logging.getLogger("anti_hacker")
 
 
-def _make_services(project_root: Path, data_root: Path) -> tuple[ConsultService, "ScanService"]:
+def _make_services(project_root: Path, data_root: Path) -> tuple[ConsultService, "ScanService", "InvestigateService"]:
     from .scanners.cartographer import Cartographer
     from .tools.scan import ScanService
+    from .tools.investigate import InvestigateService
     config_path = Path(os.getenv("ANTI_HACKER_CONFIG", project_root / "config" / "council.toml"))
     cfg = load_config(config_path)
     client = OpenRouterClient(api_key=cfg.api_key, base_url=cfg.openrouter.base_url)
@@ -28,12 +29,13 @@ def _make_services(project_root: Path, data_root: Path) -> tuple[ConsultService,
     consult = ConsultService(config=cfg, client=client, cache=cache, project_root=project_root, data_root=data_root)
     cart = Cartographer(client=client, model=cfg.cartographer.model, timeout=cfg.cartographer.timeout)
     scan = ScanService(cartographer=cart, consult=consult, project_root=project_root)
-    return consult, scan
+    investigate = InvestigateService(consult=consult)
+    return consult, scan, investigate
 
 
 def build_server(project_root: Path, data_root: Path) -> Server:
     server = Server("anti-hacker")
-    consult, scan = _make_services(project_root=project_root, data_root=data_root)
+    consult, scan, investigate = _make_services(project_root=project_root, data_root=data_root)
 
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:
@@ -63,6 +65,20 @@ def build_server(project_root: Path, data_root: Path) -> Server:
                     },
                 },
             ),
+            types.Tool(
+                name="investigate_bug",
+                description="Run a hypothesis-driven 3-round debate to pinpoint a bug's root cause.",
+                inputSchema={
+                    "type": "object",
+                    "required": ["symptom", "related_files"],
+                    "properties": {
+                        "symptom": {"type": "string"},
+                        "related_files": {"type": "array", "items": {"type": "string"}},
+                        "reproduction": {"type": "string"},
+                        "stack_trace": {"type": "string"},
+                    },
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -80,6 +96,15 @@ def build_server(project_root: Path, data_root: Path) -> Server:
             report = await scan.scan(
                 focus=arguments.get("focus", "security"),
                 max_files=arguments.get("max_files", 50),
+            )
+            import json
+            return [types.TextContent(type="text", text=json.dumps(report, ensure_ascii=False, indent=2))]
+        if name == "investigate_bug":
+            report = await investigate.investigate(
+                symptom=arguments["symptom"],
+                related_files=arguments["related_files"],
+                reproduction=arguments.get("reproduction"),
+                stack_trace=arguments.get("stack_trace"),
             )
             import json
             return [types.TextContent(type="text", text=json.dumps(report, ensure_ascii=False, indent=2))]
