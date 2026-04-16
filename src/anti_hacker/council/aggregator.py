@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import statistics
 from dataclasses import dataclass, field
@@ -65,14 +66,17 @@ def _group_patches(patches: list[tuple[str, str]], threshold: float = 0.9) -> li
 def _finding_key(f: dict[str, Any]) -> tuple[int, str]:
     line = int(f.get("line", 0) or 0)
     desc = str(f.get("description", "")).strip().lower()
-    # normalize by grabbing first few meaningful tokens
-    tokens = re.findall(r"[a-z0-9]+", desc)[:6]
-    return (line, " ".join(tokens))
+    tokens = re.findall(r"[a-z0-9]+", desc)
+    prefix = " ".join(tokens[:6])
+    tail = " ".join(tokens[6:])
+    # short stable suffix hash so distinct tails don't collide on a shared prefix
+    tail_hash = hex(hash(tail) & 0xFFFF)[2:] if tail else ""
+    return (line, f"{prefix}|{tail_hash}")
 
 
 def _median_severity(severities: list[str]) -> str:
     vals = [SEVERITY_ORDER.get(s, 1) for s in severities]
-    m = int(statistics.median(vals))
+    m = math.ceil(statistics.median(vals))
     return SEVERITY_BY_ORDER[m]
 
 
@@ -87,12 +91,16 @@ def aggregate(*, round3: dict[str, dict[str, Any]], total_members: int) -> Aggre
     key_to_members: dict[tuple[int, str], list[str]] = {}
     key_to_examples: dict[tuple[int, str], list[dict[str, Any]]] = {}
     for member, payload in round3.items():
-        for f in payload.get("final_findings", []) or []:
+        raw_findings = payload.get("final_findings")
+        findings_list = raw_findings if isinstance(raw_findings, list) else []
+        for f in findings_list:
+            if not isinstance(f, dict):
+                continue
             k = _finding_key(f)
             key_to_members.setdefault(k, []).append(member)
             key_to_examples.setdefault(k, []).append(f)
 
-    threshold = max(3, (active // 2) + 1)  # simple majority, min 3
+    threshold = max(3, (active // 2) + 1)  # strict majority; when active==3 this is unanimous
     accepted: list[dict[str, Any]] = []
     per_finding_support: list[dict[str, Any]] = []
     any_finding_produced = bool(key_to_members)

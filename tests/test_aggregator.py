@@ -100,3 +100,38 @@ def test_similarity_ignores_whitespace() -> None:
     a = "--- a/x\n+++ b/x\n@@\n-foo\n+bar\n"
     b = "--- a/x\n+++ b/x\n@@\n-foo\n+bar\n\n\n"
     assert similarity(a, b) > 0.9
+
+
+def test_malformed_final_findings_dict_does_not_crash() -> None:
+    # A misbehaving LLM returns final_findings as a dict instead of a list.
+    # The aggregator should skip the malformed entry, not crash.
+    members = {
+        "m1": {"final_findings": {"line": 10, "description": "oops"}, "unified_patch": ""},
+        "m2": {"final_findings": [{"line": 10, "severity": "high", "description": "X"}], "unified_patch": ""},
+        "m3": {"final_findings": [{"line": 10, "severity": "high", "description": "X"}], "unified_patch": ""},
+    }
+    result = aggregate(round3=members, total_members=3)
+    # Should not crash; m1 is effectively an abstention on findings
+    assert result.verdict in ("FOUND", "SPLIT", "CLEAN")
+
+
+def test_malformed_finding_entry_is_skipped() -> None:
+    # Individual finding within the list is a non-dict (e.g., a string); skip it.
+    members = {
+        "m1": {"final_findings": ["bad entry", {"line": 10, "severity": "high", "description": "X"}], "unified_patch": ""},
+        "m2": {"final_findings": [{"line": 10, "severity": "high", "description": "X"}], "unified_patch": ""},
+        "m3": {"final_findings": [{"line": 10, "severity": "high", "description": "X"}], "unified_patch": ""},
+    }
+    result = aggregate(round3=members, total_members=3)
+    assert result.verdict == "FOUND"
+
+
+def test_parse_member_json_rejects_list() -> None:
+    ok, payload, err = parse_member_json('[1, 2, 3]')
+    assert not ok
+    assert "not an object" in err
+
+
+def test_parse_member_json_rejects_null() -> None:
+    ok, payload, err = parse_member_json('null')
+    assert not ok
