@@ -18,23 +18,22 @@ from .tools.consult import ConsultService
 logger = logging.getLogger("anti_hacker")
 
 
-def _make_service(project_root: Path, data_root: Path) -> ConsultService:
+def _make_services(project_root: Path, data_root: Path) -> tuple[ConsultService, "ScanService"]:
+    from .scanners.cartographer import Cartographer
+    from .tools.scan import ScanService
     config_path = Path(os.getenv("ANTI_HACKER_CONFIG", project_root / "config" / "council.toml"))
     cfg = load_config(config_path)
     client = OpenRouterClient(api_key=cfg.api_key, base_url=cfg.openrouter.base_url)
     cache = DebateCache(ttl_seconds=cfg.limits.cache_ttl_seconds)
-    return ConsultService(
-        config=cfg,
-        client=client,
-        cache=cache,
-        project_root=project_root,
-        data_root=data_root,
-    )
+    consult = ConsultService(config=cfg, client=client, cache=cache, project_root=project_root, data_root=data_root)
+    cart = Cartographer(client=client, model=cfg.cartographer.model, timeout=cfg.cartographer.timeout)
+    scan = ScanService(cartographer=cart, consult=consult, project_root=project_root)
+    return consult, scan
 
 
 def build_server(project_root: Path, data_root: Path) -> Server:
     server = Server("anti-hacker")
-    service = _make_service(project_root, data_root)
+    consult, scan = _make_services(project_root=project_root, data_root=data_root)
 
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:
@@ -53,16 +52,34 @@ def build_server(project_root: Path, data_root: Path) -> Server:
                     },
                 },
             ),
+            types.Tool(
+                name="scan_project",
+                description="Build a cartographer map of the project, then deep-review the top-N riskiest files.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "focus": {"type": "string", "enum": ["security", "quality", "perf", "all"], "default": "security"},
+                        "max_files": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
+                    },
+                },
+            ),
         ]
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         if name == "consult_council":
-            report = await service.consult(
+            report = await consult.consult(
                 task=arguments["task"],
                 files=arguments["files"],
                 mode=arguments.get("mode", "review"),
                 force_fresh=arguments.get("force_fresh", False),
+            )
+            import json
+            return [types.TextContent(type="text", text=json.dumps(report, ensure_ascii=False, indent=2))]
+        if name == "scan_project":
+            report = await scan.scan(
+                focus=arguments.get("focus", "security"),
+                max_files=arguments.get("max_files", 50),
             )
             import json
             return [types.TextContent(type="text", text=json.dumps(report, ensure_ascii=False, indent=2))]
