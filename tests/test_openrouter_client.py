@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -109,3 +110,83 @@ async def test_per_call_timeout_raises() -> None:
     )
     with pytest.raises(OpenRouterError, match="timeout"):
         await client.chat(model="x", system="s", user="u", timeout=0.05)
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: response_format fallback on HTTP 400
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_response_format_fallback_on_400() -> None:
+    """Model returns 400 because it doesn't support response_format=json_object;
+    client retries same attempt without that field and succeeds."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append(body)
+        if "response_format" in body:
+            return httpx.Response(400, json={"error": "unsupported parameter"})
+        return httpx.Response(200, json=chat_completion("ok"))
+
+    client = OpenRouterClient(
+        api_key="sk-test",
+        base_url="https://openrouter.ai/api/v1",
+        transport=httpx.MockTransport(handler),
+        retry_backoff=lambda a: 0,
+    )
+    resp = await client.chat(model="x", system="s", user="u", timeout=10)
+    assert resp.text == "ok"
+    assert len(calls) == 2  # one with response_format, one without
+    assert "response_format" in calls[0]
+    assert "response_format" not in calls[1]
+
+
+@pytest.mark.asyncio
+async def test_response_format_disabled_does_not_send_field() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=chat_completion("ok"))
+
+    client = OpenRouterClient(
+        api_key="sk-test",
+        base_url="https://openrouter.ai/api/v1",
+        transport=httpx.MockTransport(handler),
+        retry_backoff=lambda a: 0,
+    )
+    await client.chat(model="x", system="s", user="u", timeout=10, response_format_json=False)
+    assert "response_format" not in seen["body"]
+
+
+@pytest.mark.asyncio
+async def test_persistent_400_even_without_json_mode_is_non_retryable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "really broken"})
+
+    client = OpenRouterClient(
+        api_key="sk-test",
+        base_url="https://openrouter.ai/api/v1",
+        transport=httpx.MockTransport(handler),
+        retry_backoff=lambda a: 0,
+    )
+    with pytest.raises(OpenRouterError, match="400"):
+        await client.chat(model="x", system="s", user="u", timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_empty_choices_raises_malformed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": []})
+
+    client = OpenRouterClient(
+        api_key="sk-test",
+        base_url="https://openrouter.ai/api/v1",
+        transport=httpx.MockTransport(handler),
+        retry_backoff=lambda a: 0,
+    )
+    with pytest.raises(OpenRouterError, match="malformed"):
+        await client.chat(model="x", system="s", user="u", timeout=10)
+
