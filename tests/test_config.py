@@ -7,6 +7,8 @@ from anti_hacker.config import Config, load_config
 from anti_hacker.errors import ConfigError
 
 
+# VALID_TOML: minimal valid config WITHOUT a legacy [openrouter] block.
+# Use this for all new-format tests (with [[providers]] prepended).
 VALID_TOML = """
 [[members]]
 name = "m1"
@@ -49,28 +51,54 @@ debate_timeout = 180
 per_member_timeout_fallback = 90
 cache_ttl_seconds = 600
 max_file_size_bytes = 51200
+"""
 
-[openrouter]
+# LEGACY_VALID_TOML: same as VALID_TOML but with the old [openrouter] block appended.
+# Used only for back-compat tests and legacy-format tests.
+LEGACY_VALID_TOML = VALID_TOML + '\n[openrouter]\nbase_url = "https://openrouter.ai/api/v1"\n'
+
+# Two-provider block used in new-format tests
+PROVIDERS_BLOCK = """
+[[providers]]
+name = "openrouter"
 base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[[providers]]
+name = "modal"
+base_url = "https://api.us-west-2.modal.direct/v1"
+api_key_env = "MODAL_API_KEY"
 """
 
 
+def _write(tmp_path, body):
+    p = tmp_path / "council.toml"
+    p.write_text(body, encoding="utf-8")
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Pre-existing tests (updated to new Config shape)
+# ---------------------------------------------------------------------------
+
 def test_load_valid_config(tmp_path: Path, monkeypatch) -> None:
-    (tmp_path / "council.toml").write_text(VALID_TOML, encoding="utf-8")
+    (tmp_path / "council.toml").write_text(LEGACY_VALID_TOML, encoding="utf-8")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-123")
 
     cfg = load_config(tmp_path / "council.toml")
 
     assert isinstance(cfg, Config)
-    assert cfg.api_key == "sk-test-123"
+    # New shape: api_key lives on providers[0]
+    assert cfg.providers[0].api_key == "sk-test-123"
     assert len(cfg.members) == 5
     assert cfg.members[0].name == "m1"
     assert cfg.limits.max_files_scan == 50
-    assert cfg.openrouter.base_url == "https://openrouter.ai/api/v1"
+    # New shape: base_url lives on providers[0]
+    assert cfg.providers[0].base_url == "https://openrouter.ai/api/v1"
 
 
 def test_missing_api_key_raises(tmp_path: Path, monkeypatch) -> None:
-    (tmp_path / "council.toml").write_text(VALID_TOML, encoding="utf-8")
+    (tmp_path / "council.toml").write_text(LEGACY_VALID_TOML, encoding="utf-8")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     # Prevent load_dotenv from re-populating the env var from a real .env on disk
     monkeypatch.setattr("anti_hacker.config.load_dotenv", lambda: None)
@@ -94,7 +122,7 @@ def test_wrong_member_count_raises(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_duplicate_member_names_raises(tmp_path: Path, monkeypatch) -> None:
-    dup = VALID_TOML.replace('name = "m2"', 'name = "m1"')
+    dup = LEGACY_VALID_TOML.replace('name = "m2"', 'name = "m1"')
     (tmp_path / "council.toml").write_text(dup, encoding="utf-8")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
 
@@ -106,3 +134,96 @@ def test_missing_file_raises(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     with pytest.raises(ConfigError, match="not found"):
         load_config(tmp_path / "nonexistent.toml")
+
+
+# ---------------------------------------------------------------------------
+# New tests: provider registry
+# ---------------------------------------------------------------------------
+
+def test_providers_registry_parsed(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setenv("MODAL_API_KEY", "modal-key")
+    body = PROVIDERS_BLOCK + VALID_TOML  # VALID_TOML already defined in this file
+    cfg = load_config(_write(tmp_path, body))
+    names = [p.name for p in cfg.providers]
+    assert names == ["openrouter", "modal"]
+    assert cfg.providers[1].api_key == "modal-key"
+
+
+def test_member_provider_defaults_to_first(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setenv("MODAL_API_KEY", "modal-key")
+    body = PROVIDERS_BLOCK + VALID_TOML
+    cfg = load_config(_write(tmp_path, body))
+    assert all(m.provider == "openrouter" for m in cfg.members)
+
+
+def test_fallback_fields_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setenv("MODAL_API_KEY", "modal-key")
+    members_with_fallback = VALID_TOML.replace(
+        '[[members]]\nname = "m1"\nmodel = "provider/m1:free"\nrole = "security-paranoid"\ntimeout = 90',
+        '[[members]]\nname = "m1"\nmodel = "provider/m1:free"\nrole = "security-paranoid"\ntimeout = 90\n'
+        'fallback_provider = "modal"\nfallback_model = "zai-org/GLM-5.1-FP8"',
+    )
+    cfg = load_config(_write(tmp_path, PROVIDERS_BLOCK + members_with_fallback))
+    m1 = next(m for m in cfg.members if m.name == "m1")
+    assert m1.fallback_provider == "modal"
+    assert m1.fallback_model == "zai-org/GLM-5.1-FP8"
+
+
+def test_fallback_provider_must_exist(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setenv("MODAL_API_KEY", "modal-key")
+    bad = VALID_TOML.replace(
+        'timeout = 90',
+        'timeout = 90\nfallback_provider = "ghost"\nfallback_model = "x/y"',
+        1,
+    )
+    with pytest.raises(ConfigError, match="unknown provider"):
+        load_config(_write(tmp_path, PROVIDERS_BLOCK + bad))
+
+
+def test_fallback_model_required_with_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setenv("MODAL_API_KEY", "modal-key")
+    bad = VALID_TOML.replace(
+        'timeout = 90',
+        'timeout = 90\nfallback_provider = "modal"',
+        1,
+    )
+    with pytest.raises(ConfigError, match="fallback_model"):
+        load_config(_write(tmp_path, PROVIDERS_BLOCK + bad))
+
+
+def test_fallback_provider_cannot_equal_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setenv("MODAL_API_KEY", "modal-key")
+    bad = VALID_TOML.replace(
+        'timeout = 90',
+        'timeout = 90\nfallback_provider = "openrouter"\nfallback_model = "a/b"',
+        1,
+    )
+    with pytest.raises(ConfigError, match="same provider"):
+        load_config(_write(tmp_path, PROVIDERS_BLOCK + bad))
+
+
+def test_missing_provider_api_key_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.delenv("MODAL_API_KEY", raising=False)
+    # Prevent load_dotenv from re-populating env vars from the real .env on disk
+    monkeypatch.setattr("anti_hacker.config.load_dotenv", lambda: None)
+    body = PROVIDERS_BLOCK + VALID_TOML
+    with pytest.raises(ConfigError, match="MODAL_API_KEY"):
+        load_config(_write(tmp_path, body))
+
+
+def test_back_compat_openrouter_block(tmp_path, monkeypatch):
+    # Old format: no [[providers]], only [openrouter]
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    old = VALID_TOML + '\n[openrouter]\nbase_url = "https://openrouter.ai/api/v1"\n'
+    cfg = load_config(_write(tmp_path, old))
+    assert len(cfg.providers) == 1
+    assert cfg.providers[0].name == "openrouter"
+    assert cfg.providers[0].api_key == "or-key"
+    assert cfg.providers[0].base_url == "https://openrouter.ai/api/v1"

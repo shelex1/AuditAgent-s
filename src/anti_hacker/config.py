@@ -20,16 +20,27 @@ Role = Literal[
 ]
 
 
+class ProviderConfig(BaseModel):
+    name: str
+    base_url: str
+    api_key_env: str
+    api_key: str = ""  # populated by loader after env resolution
+
+
 class MemberConfig(BaseModel):
     name: str
     model: str
     role: Role
     timeout: int = Field(gt=0, le=600)
+    provider: str | None = None               # resolved to providers[0].name if None
+    fallback_provider: str | None = None
+    fallback_model: str | None = None
 
 
 class CartographerConfig(BaseModel):
     model: str
     timeout: int = Field(default=120, gt=0, le=600)
+    provider: str | None = None               # defaults to providers[0].name
 
 
 class LimitsConfig(BaseModel):
@@ -41,32 +52,69 @@ class LimitsConfig(BaseModel):
     max_file_size_bytes: int = Field(default=51200, gt=0, le=5_000_000)
 
 
-class OpenRouterConfig(BaseModel):
-    base_url: str = "https://openrouter.ai/api/v1"
-
-
 class Config(BaseModel):
-    api_key: str
+    providers: list[ProviderConfig]
     members: list[MemberConfig]
     cartographer: CartographerConfig
     limits: LimitsConfig
-    openrouter: OpenRouterConfig
 
     @model_validator(mode="after")
-    def _validate_members(self) -> "Config":
+    def _validate(self) -> "Config":
+        if not self.providers:
+            raise ValueError("at least one provider is required")
+        names = [p.name for p in self.providers]
+        if len(set(names)) != len(names):
+            raise ValueError("provider names must be unique")
+        known = set(names)
+
         if len(self.members) != 5:
             raise ValueError("council must have exactly 5 members")
-        names = [m.name for m in self.members]
-        if len(set(names)) != len(names):
+        mnames = [m.name for m in self.members]
+        if len(set(mnames)) != len(mnames):
             raise ValueError("member names must be unique")
+
+        default_provider = self.providers[0].name
+        for m in self.members:
+            if m.provider is None:
+                m.provider = default_provider
+            if m.provider not in known:
+                raise ValueError(f"unknown provider '{m.provider}' on member '{m.name}'")
+            if m.fallback_provider is not None:
+                if m.fallback_provider not in known:
+                    raise ValueError(
+                        f"unknown provider '{m.fallback_provider}' in fallback_provider on member '{m.name}'"
+                    )
+                if m.fallback_provider == m.provider:
+                    raise ValueError(
+                        f"member '{m.name}' fallback_provider is the same provider as primary"
+                    )
+                if not m.fallback_model:
+                    raise ValueError(
+                        f"member '{m.name}' sets fallback_provider but no fallback_model"
+                    )
+            elif m.fallback_model is not None:
+                raise ValueError(
+                    f"member '{m.name}' sets fallback_model without fallback_provider"
+                )
+
+        if self.cartographer.provider is None:
+            self.cartographer.provider = default_provider
+        elif self.cartographer.provider not in known:
+            raise ValueError(f"unknown provider '{self.cartographer.provider}' in cartographer")
         return self
+
+
+def _back_compat_providers(data: dict) -> list[dict]:
+    """If [[providers]] is missing but legacy [openrouter] is present, synthesize one."""
+    if "providers" in data and data["providers"]:
+        return data["providers"]
+    legacy = data.get("openrouter") or {}
+    base_url = legacy.get("base_url", "https://openrouter.ai/api/v1")
+    return [{"name": "openrouter", "base_url": base_url, "api_key_env": "OPENROUTER_API_KEY"}]
 
 
 def load_config(toml_path: Path) -> Config:
     load_dotenv()
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        raise ConfigError("OPENROUTER_API_KEY is not set in environment or .env")
 
     if not toml_path.exists():
         raise ConfigError(f"Council config not found: {toml_path}")
@@ -77,9 +125,28 @@ def load_config(toml_path: Path) -> Config:
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"Invalid TOML in {toml_path}: {exc}") from exc
 
+    # Back-compat: synthesize providers if needed
+    providers_data = _back_compat_providers(data)
+    # Resolve api keys from environment
+    resolved: list[dict] = []
+    for p in providers_data:
+        env_name = p.get("api_key_env", "OPENROUTER_API_KEY")
+        key = os.getenv(env_name)
+        if not key:
+            raise ConfigError(f"{env_name} is not set in environment or .env")
+        resolved.append({**p, "api_key": key})
+    data = {**data, "providers": resolved}
+    data.pop("openrouter", None)  # drop legacy block after synthesis
+
     try:
-        return Config(api_key=api_key, **data)
+        return Config(**data)
     except Exception as exc:
-        # Pydantic ValidationError may wrap ValueError messages; extract and re-raise
         msg = str(exc)
         raise ConfigError(msg) from exc
+
+
+def provider_by_name(cfg: Config, name: str) -> ProviderConfig:
+    for p in cfg.providers:
+        if p.name == name:
+            return p
+    raise ConfigError(f"provider not found: {name}")
