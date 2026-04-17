@@ -243,3 +243,14 @@ async def test_429_without_retry_after_uses_default_backoff() -> None:
     assert resp.text == "ok"
     assert backoff_called["n"] >= 1  # default backoff was consulted
 
+
+def test_openrouter_error_has_kind_default_none():
+    from anti_hacker.errors import OpenRouterError
+    err = OpenRouterError("boom")
+    assert err.kind is None
+
+def test_openrouter_error_kind_can_be_set():
+    from anti_hacker.errors import OpenRouterError
+    err = OpenRouterError("rate limited", kind="rate_limit")
+    assert err.kind == "rate_limit"
+    assert str(err) == "rate limited"
