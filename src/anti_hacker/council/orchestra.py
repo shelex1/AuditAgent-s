@@ -27,6 +27,8 @@ class RoundResult:
     abstained: list[str] = field(default_factory=list)
     partial_timeout: bool = False
     errors: dict[str, str] = field(default_factory=dict)
+    member_meta: dict[int, dict[str, dict[str, Any]]] = field(default_factory=dict)
+    # shape: {round_number: {member_name: {"provider": str, "via_fallback": bool, "model": str}}}
 
 
 REPAIR_INSTRUCTION = (
@@ -70,7 +72,7 @@ class DebateOrchestra:
 
         # ROUND 1
         r1_user = build_round1_prompt(task=task, files=files, mode=mode, max_bytes_per_file=self.max_bytes_per_file)
-        r1 = await self._ask_all(active, r1_user, result)
+        r1 = await self._ask_all(active, r1_user, result, round_number=1)
         result.round1 = r1
         active = [m for m in active if m.name in r1]
 
@@ -80,7 +82,7 @@ class DebateOrchestra:
         # ROUND 2
         peer_list = [{"member": n, "payload": p} for n, p in r1.items()]
         r2_user = build_round2_prompt(task=task, peer_responses=peer_list)
-        r2 = await self._ask_all(active, r2_user, result)
+        r2 = await self._ask_all(active, r2_user, result, round_number=2)
         result.round2 = r2
         active = [m for m in active if m.name in r2]
 
@@ -97,7 +99,7 @@ class DebateOrchestra:
             files=files,
             max_bytes_per_file=self.max_bytes_per_file,
         )
-        r3 = await self._ask_all(active, r3_user, result)
+        r3 = await self._ask_all(active, r3_user, result, round_number=3)
         result.round3 = r3
 
     async def _ask_all(
@@ -105,33 +107,51 @@ class DebateOrchestra:
         members: list[CouncilMember],
         user_prompt: str,
         result: RoundResult,
+        *,
+        round_number: int,
     ) -> dict[str, dict[str, Any]]:
-        async def _one(member: CouncilMember) -> tuple[str, dict[str, Any] | None, str]:
+        async def _one(
+            member: CouncilMember,
+        ) -> tuple[str, dict[str, Any] | None, str, dict[str, Any] | None]:
             system = role_system_prompt(member.role)
+            reply_meta: dict[str, Any] | None = None
             try:
-                raw = await member.ask(system=system, user=user_prompt)
+                reply = await member.ask(system=system, user=user_prompt)
+                reply_meta = {
+                    "provider": reply.provider,
+                    "via_fallback": reply.via_fallback,
+                    "model": reply.model,
+                }
+                raw = reply.text
             except OpenRouterError as exc:
-                return member.name, None, f"openrouter: {exc}"
+                return member.name, None, f"openrouter: {exc}", None
             ok, payload, err = parse_member_json(raw)
             if not ok:
                 # repair retry
                 try:
-                    raw2 = await member.ask(
+                    reply2 = await member.ask(
                         system=system,
                         user=REPAIR_INSTRUCTION.format(raw=raw[:500]),
                     )
+                    reply_meta = {
+                        "provider": reply2.provider,
+                        "via_fallback": reply2.via_fallback,
+                        "model": reply2.model,
+                    }
+                    raw2 = reply2.text
                 except OpenRouterError as exc:
-                    return member.name, None, f"openrouter(repair): {exc}"
+                    return member.name, None, f"openrouter(repair): {exc}", None
                 ok2, payload2, err2 = parse_member_json(raw2)
                 if not ok2:
-                    return member.name, None, f"invalid_json: {err2}"
-                return member.name, payload2, ""
-            return member.name, payload, ""
+                    return member.name, None, f"invalid_json: {err2}", None
+                return member.name, payload2, "", reply_meta
+            return member.name, payload, "", reply_meta
 
         tasks = [asyncio.create_task(_one(m)) for m in members]
         out: dict[str, dict[str, Any]] = {}
+        meta_bucket = result.member_meta.setdefault(round_number, {})
         for coro in asyncio.as_completed(tasks):
-            name, payload, err = await coro
+            name, payload, err, meta = await coro
             if payload is None:
                 if name not in result.abstained:
                     result.abstained.append(name)
@@ -139,4 +159,6 @@ class DebateOrchestra:
                 logger.warning("member %s abstained: %s", name, err)
             else:
                 out[name] = payload
+                if meta is not None:
+                    meta_bucket[name] = meta
         return out

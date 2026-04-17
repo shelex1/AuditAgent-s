@@ -19,14 +19,20 @@ class DebateLog:
         self._dir = root / "debates"
         self._dir.mkdir(parents=True, exist_ok=True)
 
-    def record_round(self, round_number: int, responses: dict[str, Any]) -> None:
-        self._rounds.append(
-            {
-                "round": round_number,
-                "at": datetime.now(timezone.utc).isoformat(),
-                "responses": responses,
-            }
-        )
+    def record_round(
+        self,
+        round_number: int,
+        responses: dict[str, Any],
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        entry: dict[str, Any] = {
+            "round": round_number,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "responses": responses,
+        }
+        if meta is not None:
+            entry["member_meta"] = meta
+        self._rounds.append(entry)
 
     def finalize(self, final_report: dict[str, Any]) -> Path:
         payload = {

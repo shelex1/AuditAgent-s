@@ -31,13 +31,13 @@ class ConsultService:
         self,
         *,
         config: Config,
-        client: OpenRouterClient,
+        clients: dict[str, OpenRouterClient],
         cache: DebateCache,
         project_root: Path,
         data_root: Path,
     ) -> None:
         self.config = config
-        self.client = client
+        self.clients = clients
         self.cache = cache
         self.project_root = project_root.resolve()
         self.data_root = data_root.resolve()
@@ -70,7 +70,14 @@ class ConsultService:
             if hit is not None:
                 return {**hit, "cached": True}
 
-        members = [CouncilMember(config=mc, client=self.client) for mc in self.config.members]
+        members = [
+            CouncilMember(
+                config=mc,
+                primary_client=self.clients[mc.provider],
+                fallback_client=self.clients.get(mc.fallback_provider) if mc.fallback_provider else None,
+            )
+            for mc in self.config.members
+        ]
         orchestra = DebateOrchestra(
             members=members,
             debate_timeout=self.config.limits.debate_timeout,
@@ -80,9 +87,9 @@ class ConsultService:
 
         debate_id = _debate_id()
         log = DebateLog(debate_id=debate_id, root=self.data_root)
-        log.record_round(1, result.round1)
-        log.record_round(2, result.round2)
-        log.record_round(3, result.round3)
+        log.record_round(1, result.round1, meta=result.member_meta.get(1))
+        log.record_round(2, result.round2, meta=result.member_meta.get(2))
+        log.record_round(3, result.round3, meta=result.member_meta.get(3))
 
         if not result.round3 or len(result.round3) < 3:
             if result.partial_timeout:

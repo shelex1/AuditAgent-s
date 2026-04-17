@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from anti_hacker.config import MemberConfig
-from anti_hacker.council.member import CouncilMember
+from anti_hacker.council.member import CouncilMember, MemberReply
 from anti_hacker.council.orchestra import DebateOrchestra, RoundResult
 from anti_hacker.openrouter.client import OpenRouterClient
 from tests.fixtures.sample_responses import chat_completion
@@ -28,7 +28,7 @@ def _member(name: str, content_by_round: list[str]) -> CouncilMember:
         retry_backoff=lambda a: 0,
     )
     cfg = MemberConfig(name=name, model=f"p/{name}:free", role="pragmatic-engineer", timeout=5)
-    return CouncilMember(config=cfg, client=client)
+    return CouncilMember(config=cfg, primary_client=client)
 
 
 ROUND1_OK = json.dumps({"findings": [], "confidence": 7, "reasoning": "clean"})
@@ -75,8 +75,57 @@ async def test_global_timeout_cancels_in_flight() -> None:
             max_retries=1,
         )
         cfg = MemberConfig(name=f"slow{i}", model="x", role="pragmatic-engineer", timeout=5)
-        slow_members.append(CouncilMember(config=cfg, client=client))
+        slow_members.append(CouncilMember(config=cfg, primary_client=client))
 
     orch = DebateOrchestra(members=slow_members, debate_timeout=0.1, max_bytes_per_file=1024)
     result = await orch.run(task="t", files={"a.py": "x"}, mode="review")
     assert result.partial_timeout is True
+
+
+@pytest.mark.asyncio
+async def test_member_meta_recorded_per_round() -> None:
+    """After a full run, result.member_meta[1][member_name] records provider/via_fallback/model."""
+
+    # Build a fake that monkeypatches CouncilMember.ask to return MemberReply directly
+    class FakeClient:
+        def __init__(self, content_by_round: list[str]) -> None:
+            self._responses = content_by_round
+            self._counter = 0
+
+        async def chat(self, *, model, system, user, timeout, max_retries=None, **_):
+            i = self._counter
+            self._counter += 1
+            text = self._responses[min(i, len(self._responses) - 1)]
+
+            class _Resp:
+                pass
+
+            r = _Resp()
+            r.text = text
+            r.model = model
+            return r
+
+    def _make_member(name: str, content_by_round: list[str]) -> CouncilMember:
+        fake = FakeClient(content_by_round)
+        cfg = MemberConfig(
+            name=name,
+            model=f"prov/{name}:free",
+            role="pragmatic-engineer",
+            timeout=5,
+            provider="openrouter",
+        )
+        return CouncilMember(config=cfg, primary_client=fake)
+
+    members = [_make_member(f"m{i}", [ROUND1_OK, ROUND2_OK, ROUND3_OK]) for i in range(5)]
+    orch = DebateOrchestra(members=members, debate_timeout=30, max_bytes_per_file=1024)
+    result = await orch.run(task="t", files={"a.py": "x"}, mode="review")
+
+    # All members should have responded in round 1
+    assert result.abstained == []
+    assert 1 in result.member_meta
+    for i in range(5):
+        name = f"m{i}"
+        meta = result.member_meta[1][name]
+        assert meta["provider"] == "openrouter"
+        assert meta["via_fallback"] is False
+        assert meta["model"] == f"prov/{name}:free"

@@ -4,7 +4,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from anti_hacker.config import Config, MemberConfig, CartographerConfig, LimitsConfig, OpenRouterConfig
+from anti_hacker.config import Config, MemberConfig, CartographerConfig, LimitsConfig, ProviderConfig
 from anti_hacker.council.cache import DebateCache
 from anti_hacker.openrouter.client import OpenRouterClient
 from anti_hacker.tools.consult import ConsultService
@@ -43,11 +43,10 @@ def git_project(tmp_path: Path) -> Path:
 
 def _config() -> Config:
     return Config(
-        api_key="sk-test",
-        members=[MemberConfig(name=f"m{i}", model=f"p/m{i}:free", role="pragmatic-engineer", timeout=5) for i in range(1, 6)],
+        providers=[ProviderConfig(name="openrouter", base_url="https://openrouter.ai/api/v1", api_key_env="OPENROUTER_API_KEY", api_key="sk-test")],
+        members=[MemberConfig(name=f"m{i}", model=f"p/m{i}:free", role="pragmatic-engineer", timeout=5, provider="openrouter") for i in range(1, 6)],
         cartographer=CartographerConfig(model="p/fast:free", timeout=60),
         limits=LimitsConfig(max_files_scan=5),
-        openrouter=OpenRouterConfig(),
     )
 
 
@@ -67,10 +66,10 @@ async def test_scan_project_ranks_and_deep_reviews(git_project: Path) -> None:
     # 1 (cart) + 15 (5 members × 3 rounds) for the top file only (top-1 for test simplicity)
     sequence = [CART_RESP] + [R1] * 5 + [R2] * 5 + [R3] * 5
     transport = _transport(sequence)
-    client = OpenRouterClient(api_key=cfg.api_key, base_url=cfg.openrouter.base_url, transport=transport, retry_backoff=lambda a: 0)
+    client = OpenRouterClient(api_key=cfg.providers[0].api_key, base_url=cfg.providers[0].base_url, transport=transport, retry_backoff=lambda a: 0)
     cache = DebateCache(ttl_seconds=0)
     cartographer = Cartographer(client=client, model=cfg.cartographer.model, timeout=cfg.cartographer.timeout)
-    consult = ConsultService(config=cfg, client=client, cache=cache, project_root=git_project, data_root=git_project)
+    consult = ConsultService(config=cfg, clients={"openrouter": client}, cache=cache, project_root=git_project, data_root=git_project)
     scan = ScanService(cartographer=cartographer, consult=consult, project_root=git_project)
 
     report = await scan.scan(focus="security", max_files=1)

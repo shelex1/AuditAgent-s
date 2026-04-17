@@ -19,11 +19,10 @@ class OpenRouterResponse:
 
 
 class OpenRouterClient:
-    """Async OpenRouter client with bounded retries and classification of errors.
+    """Async client for any OpenAI-compatible Chat Completions endpoint.
 
-    Network/timeout/5xx/429 errors get retried with a backoff schedule. After
-    the schedule is exhausted, an OpenRouterError is raised. The caller
-    decides whether a single member abstains or the whole debate aborts.
+    Named `OpenRouterClient` for historical reasons; instantiate one per
+    provider (OpenRouter, Modal, etc.) with its own base_url and api_key.
     """
 
     def __init__(
@@ -51,6 +50,7 @@ class OpenRouterClient:
         user: str,
         timeout: float,
         response_format_json: bool = True,
+        max_retries: int | None = None,
     ) -> OpenRouterResponse:
         base_payload: dict = {
             "model": model,
@@ -65,10 +65,11 @@ class OpenRouterClient:
         }
         url = f"{self._base_url}/chat/completions"
 
+        effective_max = self._max_retries if max_retries is None else max_retries
         last_exc: Exception | None = None
         use_json_mode = response_format_json  # may flip to False on 400
         attempt = 0
-        while attempt < self._max_retries:
+        while attempt < effective_max:
             sleep_override: float | None = None
             payload = dict(base_payload)
             if use_json_mode:
@@ -92,13 +93,13 @@ class OpenRouterClient:
                         if use_json_mode:
                             use_json_mode = False
                             continue
-                        raise OpenRouterError("malformed response: empty choices")
+                        raise OpenRouterError("malformed response: empty choices", kind="malformed")
                     content = choices[0]["message"].get("content")
                     if not content:
                         if use_json_mode:
                             use_json_mode = False
                             continue
-                        raise OpenRouterError("malformed response: empty content")
+                        raise OpenRouterError("malformed response: empty content", kind="malformed")
                     return OpenRouterResponse(text=content, model=model)
                 if r.status_code == 400 and use_json_mode:
                     # Some free models reject response_format; retry without it
@@ -112,23 +113,23 @@ class OpenRouterClient:
                             sleep_override = float(retry_after)
                         except (TypeError, ValueError):
                             sleep_override = None
-                    last_exc = OpenRouterError(f"rate limit (attempt {attempt + 1})")
+                    last_exc = OpenRouterError(f"rate limit (attempt {attempt + 1})", kind="rate_limit")
                 elif 500 <= r.status_code < 600:
-                    last_exc = OpenRouterError(f"upstream {r.status_code} (attempt {attempt + 1})")
+                    last_exc = OpenRouterError(f"upstream {r.status_code} (attempt {attempt + 1})", kind="upstream")
                 else:
-                    raise OpenRouterError(f"unexpected status {r.status_code}: {r.text[:200]}")
+                    raise OpenRouterError(f"unexpected status {r.status_code}: {r.text[:200]}", kind="upstream")
             except httpx.TimeoutException:
-                last_exc = OpenRouterError(f"timeout after {timeout}s (attempt {attempt + 1})")
+                last_exc = OpenRouterError(f"timeout after {timeout}s (attempt {attempt + 1})", kind="timeout")
             except httpx.HTTPError as exc:
-                last_exc = OpenRouterError(f"network error: {exc}")
+                last_exc = OpenRouterError(f"network error: {exc}", kind="network")
             except (KeyError, ValueError, IndexError) as exc:
-                raise OpenRouterError(f"malformed response: {exc}") from exc
+                raise OpenRouterError(f"malformed response: {exc}", kind="malformed") from exc
 
-            if attempt < self._max_retries - 1:
+            if attempt < effective_max - 1:
                 delay = sleep_override if sleep_override is not None else self._retry_backoff(attempt)
                 await asyncio.sleep(delay)
             attempt += 1
 
         if last_exc is None:
-            raise OpenRouterError("retry loop exited without an exception (unreachable)")
+            raise OpenRouterError("retry loop exited without an exception (unreachable)", kind="upstream")
         raise last_exc
