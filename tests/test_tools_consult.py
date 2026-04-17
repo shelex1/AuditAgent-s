@@ -4,7 +4,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from anti_hacker.config import Config, MemberConfig, CartographerConfig, LimitsConfig, OpenRouterConfig
+from anti_hacker.config import Config, MemberConfig, CartographerConfig, LimitsConfig, ProviderConfig
 from anti_hacker.council.cache import DebateCache
 from anti_hacker.openrouter.client import OpenRouterClient
 from anti_hacker.tools.consult import ConsultService
@@ -22,14 +22,13 @@ R3 = json.dumps({
 
 def _config() -> Config:
     return Config(
-        api_key="sk-test",
+        providers=[ProviderConfig(name="openrouter", base_url="https://openrouter.ai/api/v1", api_key_env="OPENROUTER_API_KEY", api_key="sk-test")],
         members=[
-            MemberConfig(name=f"m{i}", model=f"p/m{i}:free", role="pragmatic-engineer", timeout=5)
+            MemberConfig(name=f"m{i}", model=f"p/m{i}:free", role="pragmatic-engineer", timeout=5, provider="openrouter")
             for i in range(1, 6)
         ],
         cartographer=CartographerConfig(model="p/fast:free", timeout=60),
         limits=LimitsConfig(),
-        openrouter=OpenRouterConfig(),
     )
 
 
@@ -61,9 +60,9 @@ async def test_consult_happy_path(git_project: Path) -> None:
     cfg = _config()
     # every member returns R1, R2, R3 in order (shared transport per client is fine for this canned sequence)
     transport = _transport_sequence([R1, R2, R3])
-    client = OpenRouterClient(api_key=cfg.api_key, base_url=cfg.openrouter.base_url, transport=transport, retry_backoff=lambda a: 0)
+    client = OpenRouterClient(api_key=cfg.providers[0].api_key, base_url=cfg.providers[0].base_url, transport=transport, retry_backoff=lambda a: 0)
     cache = DebateCache(ttl_seconds=0)
-    service = ConsultService(config=cfg, client=client, cache=cache, project_root=git_project, data_root=git_project)
+    service = ConsultService(config=cfg, clients={"openrouter": client}, cache=cache, project_root=git_project, data_root=git_project)
 
     report = await service.consult(task="find bugs", files=["x.py"], mode="review")
 
@@ -77,12 +76,12 @@ async def test_consult_happy_path(git_project: Path) -> None:
 async def test_consult_rejects_path_outside_root(tmp_path: Path) -> None:
     cfg = _config()
     transport = _transport_sequence([R1, R2, R3])
-    client = OpenRouterClient(api_key=cfg.api_key, base_url=cfg.openrouter.base_url, transport=transport, retry_backoff=lambda a: 0)
+    client = OpenRouterClient(api_key=cfg.providers[0].api_key, base_url=cfg.providers[0].base_url, transport=transport, retry_backoff=lambda a: 0)
     cache = DebateCache(ttl_seconds=0)
     outside = tmp_path.parent / "outside.py"
     outside.write_text("x", encoding="utf-8")
     try:
-        service = ConsultService(config=cfg, client=client, cache=cache, project_root=tmp_path, data_root=tmp_path)
+        service = ConsultService(config=cfg, clients={"openrouter": client}, cache=cache, project_root=tmp_path, data_root=tmp_path)
         with pytest.raises(ValueError, match="outside project root"):
             await service.consult(task="t", files=[str(outside)], mode="review")
     finally:

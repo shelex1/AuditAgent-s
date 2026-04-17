@@ -25,10 +25,14 @@ def _make_services(project_root: Path, data_root: Path) -> tuple[ConsultService,
     from .tools.logs import LogService
     config_path = Path(os.getenv("ANTI_HACKER_CONFIG", project_root / "config" / "council.toml"))
     cfg = load_config(config_path)
-    client = OpenRouterClient(api_key=cfg.api_key, base_url=cfg.openrouter.base_url)
+    clients: dict[str, OpenRouterClient] = {
+        p.name: OpenRouterClient(api_key=p.api_key, base_url=p.base_url)
+        for p in cfg.providers
+    }
     cache = DebateCache(ttl_seconds=cfg.limits.cache_ttl_seconds)
-    consult = ConsultService(config=cfg, client=client, cache=cache, project_root=project_root, data_root=data_root)
-    cart = Cartographer(client=client, model=cfg.cartographer.model, timeout=cfg.cartographer.timeout)
+    consult = ConsultService(config=cfg, clients=clients, cache=cache, project_root=project_root, data_root=data_root)
+    cart_client = clients[cfg.cartographer.provider]
+    cart = Cartographer(client=cart_client, model=cfg.cartographer.model, timeout=cfg.cartographer.timeout)
     scan = ScanService(cartographer=cart, consult=consult, project_root=project_root)
     investigate = InvestigateService(consult=consult)
     logs = LogService(data_root=data_root)

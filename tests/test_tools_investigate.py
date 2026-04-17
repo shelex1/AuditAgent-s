@@ -4,7 +4,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from anti_hacker.config import Config, MemberConfig, CartographerConfig, LimitsConfig, OpenRouterConfig
+from anti_hacker.config import Config, MemberConfig, CartographerConfig, LimitsConfig, ProviderConfig
 from anti_hacker.council.cache import DebateCache
 from anti_hacker.openrouter.client import OpenRouterClient
 from anti_hacker.tools.consult import ConsultService
@@ -23,11 +23,10 @@ R3 = json.dumps({
 
 def _config() -> Config:
     return Config(
-        api_key="sk-test",
-        members=[MemberConfig(name=f"m{i}", model=f"p/m{i}:free", role="pragmatic-engineer", timeout=5) for i in range(1, 6)],
+        providers=[ProviderConfig(name="openrouter", base_url="https://openrouter.ai/api/v1", api_key_env="OPENROUTER_API_KEY", api_key="sk-test")],
+        members=[MemberConfig(name=f"m{i}", model=f"p/m{i}:free", role="pragmatic-engineer", timeout=5, provider="openrouter") for i in range(1, 6)],
         cartographer=CartographerConfig(model="p/fast:free", timeout=60),
         limits=LimitsConfig(),
-        openrouter=OpenRouterConfig(),
     )
 
 
@@ -54,9 +53,9 @@ async def test_investigate_returns_root_cause_and_patch(git_project: Path) -> No
         counter["i"] += 1
         return httpx.Response(200, json=chat_completion(sequence[min(i, len(sequence) - 1)]))
 
-    client = OpenRouterClient(api_key=cfg.api_key, base_url=cfg.openrouter.base_url, transport=httpx.MockTransport(handler), retry_backoff=lambda a: 0)
+    client = OpenRouterClient(api_key=cfg.providers[0].api_key, base_url=cfg.providers[0].base_url, transport=httpx.MockTransport(handler), retry_backoff=lambda a: 0)
     cache = DebateCache(ttl_seconds=0)
-    consult = ConsultService(config=cfg, client=client, cache=cache, project_root=git_project, data_root=git_project)
+    consult = ConsultService(config=cfg, clients={"openrouter": client}, cache=cache, project_root=git_project, data_root=git_project)
     inv = InvestigateService(consult=consult)
 
     report = await inv.investigate(
