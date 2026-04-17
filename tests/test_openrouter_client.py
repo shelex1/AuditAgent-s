@@ -254,3 +254,65 @@ def test_openrouter_error_kind_can_be_set():
     err = OpenRouterError("rate limited", kind="rate_limit")
     assert err.kind == "rate_limit"
     assert str(err) == "rate limited"
+
+
+def _mock_transport(responses):
+    call = {"i": 0}
+
+    async def handler(request):
+        i = call["i"]
+        call["i"] += 1
+        status, body, headers = responses[min(i, len(responses) - 1)]
+        return httpx.Response(status, json=body, headers=headers or {})
+
+    return httpx.MockTransport(handler), call
+
+
+@pytest.mark.asyncio
+async def test_429_terminal_sets_kind_rate_limit():
+    transport, _ = _mock_transport([(429, {}, {"retry-after": "0"})] * 3)
+    client = OpenRouterClient(
+        api_key="k", base_url="http://x", transport=transport,
+        retry_backoff=lambda a: 0.0, max_retries=3,
+    )
+    with pytest.raises(OpenRouterError) as ei:
+        await client.chat(model="m", system="s", user="u", timeout=1.0)
+    assert ei.value.kind == "rate_limit"
+
+
+@pytest.mark.asyncio
+async def test_5xx_terminal_sets_kind_upstream():
+    transport, _ = _mock_transport([(503, {}, None)] * 3)
+    client = OpenRouterClient(
+        api_key="k", base_url="http://x", transport=transport,
+        retry_backoff=lambda a: 0.0, max_retries=3,
+    )
+    with pytest.raises(OpenRouterError) as ei:
+        await client.chat(model="m", system="s", user="u", timeout=1.0)
+    assert ei.value.kind == "upstream"
+
+
+@pytest.mark.asyncio
+async def test_timeout_sets_kind_timeout():
+    async def handler(request):
+        raise httpx.TimeoutException("slow")
+    transport = httpx.MockTransport(handler)
+    client = OpenRouterClient(
+        api_key="k", base_url="http://x", transport=transport,
+        retry_backoff=lambda a: 0.0, max_retries=2,
+    )
+    with pytest.raises(OpenRouterError) as ei:
+        await client.chat(model="m", system="s", user="u", timeout=1.0)
+    assert ei.value.kind == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_per_call_max_retries_overrides_instance():
+    transport, counter = _mock_transport([(429, {}, {"retry-after": "0"})] * 10)
+    client = OpenRouterClient(
+        api_key="k", base_url="http://x", transport=transport,
+        retry_backoff=lambda a: 0.0, max_retries=5,
+    )
+    with pytest.raises(OpenRouterError):
+        await client.chat(model="m", system="s", user="u", timeout=1.0, max_retries=1)
+    assert counter["i"] == 1
