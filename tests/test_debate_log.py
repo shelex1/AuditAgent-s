@@ -40,3 +40,18 @@ def test_write_is_atomic_no_partial_file(tmp_path: Path, monkeypatch) -> None:
 def test_load_missing_debate_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         load_debate_log("nonexistent", root=tmp_path)
+
+
+def test_record_round_with_meta(tmp_path):
+    from anti_hacker.io.debate_log import DebateLog
+    log = DebateLog(debate_id="d1", root=tmp_path)
+    log.record_round(
+        1,
+        {"m1": {"verdict": "ok"}},
+        meta={"m1": {"provider": "modal", "via_fallback": True, "model": "fb/m"}},
+    )
+    path = log.finalize({"verdict": "CLEAN"})
+    import json
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["rounds"][0]["member_meta"]["m1"]["via_fallback"] is True
+    assert payload["rounds"][0]["member_meta"]["m1"]["provider"] == "modal"
