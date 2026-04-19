@@ -23,8 +23,9 @@ Role = Literal[
 class ProviderConfig(BaseModel):
     name: str
     base_url: str
-    api_key_env: str
+    api_key_env: str | None = None
     api_key: str = ""  # populated by loader after env resolution
+    empty_means_quota: bool = False
 
 
 class MemberConfig(BaseModel):
@@ -130,7 +131,10 @@ def load_config(toml_path: Path) -> Config:
     # Resolve api keys from environment
     resolved: list[dict] = []
     for p in providers_data:
-        env_name = p.get("api_key_env", "OPENROUTER_API_KEY")
+        env_name = p.get("api_key_env")
+        if env_name is None:
+            resolved.append({**p, "api_key": ""})
+            continue
         key = os.getenv(env_name)
         if not key:
             raise ConfigError(f"{env_name} is not set in environment or .env")

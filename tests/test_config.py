@@ -218,6 +218,49 @@ def test_missing_provider_api_key_env(tmp_path, monkeypatch):
         load_config(_write(tmp_path, body))
 
 
+# ---------------------------------------------------------------------------
+# Helpers for new fallback/provider-flag tests
+# ---------------------------------------------------------------------------
+
+_MINIMAL_VALID_CONFIG = """
+[[providers]]
+name = "openrouter"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+""" + VALID_TOML
+
+_MINIMAL_VALID_CONFIG_WITH_FLAG = """
+[[providers]]
+name = "openrouter"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+empty_means_quota = true
+""" + VALID_TOML
+
+
+def test_provider_without_api_key_env_loads_with_empty_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    toml = tmp_path / "council.toml"
+    toml.write_text(_MINIMAL_VALID_CONFIG + """
+[[providers]]
+name = "ollama"
+base_url = "http://localhost:11434/v1"
+""")
+    cfg = load_config(toml)
+    ollama = next(p for p in cfg.providers if p.name == "ollama")
+    assert ollama.api_key == ""
+    assert ollama.api_key_env is None
+
+
+def test_provider_empty_means_quota_loads(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    toml = tmp_path / "council.toml"
+    toml.write_text(_MINIMAL_VALID_CONFIG_WITH_FLAG)
+    cfg = load_config(toml)
+    openr = next(p for p in cfg.providers if p.name == "openrouter")
+    assert openr.empty_means_quota is True
+
+
 def test_back_compat_openrouter_block(tmp_path, monkeypatch):
     # Old format: no [[providers]], only [openrouter]
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
