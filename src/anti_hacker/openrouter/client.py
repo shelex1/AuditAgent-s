@@ -33,6 +33,7 @@ class OpenRouterClient:
         transport: httpx.BaseTransport | httpx.AsyncBaseTransport | None = None,
         retry_backoff: Callable[[int], float] | None = None,
         max_retries: int = 3,
+        empty_means_quota: bool = False,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -41,6 +42,7 @@ class OpenRouterClient:
             lambda attempt: DEFAULT_RETRY_SCHEDULE[min(attempt, len(DEFAULT_RETRY_SCHEDULE) - 1)]
         )
         self._max_retries = max_retries
+        self._empty_means_quota = empty_means_quota
 
     async def chat(
         self,
@@ -93,12 +95,22 @@ class OpenRouterClient:
                         if use_json_mode:
                             use_json_mode = False
                             continue
+                        if self._empty_means_quota:
+                            raise OpenRouterError(
+                                "empty 200 treated as quota exhaustion",
+                                kind="quota_exhausted",
+                            )
                         raise OpenRouterError("malformed response: empty choices", kind="malformed")
                     content = choices[0]["message"].get("content")
                     if not content:
                         if use_json_mode:
                             use_json_mode = False
                             continue
+                        if self._empty_means_quota:
+                            raise OpenRouterError(
+                                "empty 200 content treated as quota exhaustion",
+                                kind="quota_exhausted",
+                            )
                         raise OpenRouterError("malformed response: empty content", kind="malformed")
                     return OpenRouterResponse(text=content, model=model)
                 if r.status_code == 400 and use_json_mode:

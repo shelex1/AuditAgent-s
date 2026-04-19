@@ -316,3 +316,42 @@ async def test_per_call_max_retries_overrides_instance():
     with pytest.raises(OpenRouterError):
         await client.chat(model="m", system="s", user="u", timeout=1.0, max_retries=1)
     assert counter["i"] == 1
+
+
+@pytest.mark.asyncio
+async def test_empty_200_with_flag_raises_quota_exhausted():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"choices": []})
+
+    transport = httpx.MockTransport(handler)
+    client = OpenRouterClient(
+        api_key="k",
+        base_url="https://x/api/v1",
+        transport=transport,
+        empty_means_quota=True,
+        max_retries=1,
+    )
+    with pytest.raises(OpenRouterError) as exc:
+        await client.chat(model="m", system="s", user="u", timeout=5)
+    assert exc.value.kind == "quota_exhausted"
+    # One call with json_mode on, one with json_mode off (same attempt), then raise
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_200_without_flag_raises_malformed():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": []})
+
+    client = OpenRouterClient(
+        api_key="k",
+        base_url="https://x/api/v1",
+        transport=httpx.MockTransport(handler),
+        max_retries=1,
+    )
+    with pytest.raises(OpenRouterError) as exc:
+        await client.chat(model="m", system="s", user="u", timeout=5)
+    assert exc.value.kind == "malformed"
