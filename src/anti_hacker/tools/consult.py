@@ -74,7 +74,7 @@ class ConsultService:
             CouncilMember(
                 config=mc,
                 primary_client=self.clients[mc.provider],
-                fallback_client=self.clients.get(mc.fallback_provider) if mc.fallback_provider else None,
+                fallback_chain=[(entry, self.clients[entry.provider]) for entry in mc.fallbacks],
             )
             for mc in self.config.members
         ]
