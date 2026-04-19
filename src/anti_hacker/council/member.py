@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from ..config import MemberConfig, Role
+from ..config import FallbackEntry, MemberConfig, Role
 from ..errors import OpenRouterError
+
+
+FALLBACK_TRIGGERS: frozenset[str] = frozenset({"rate_limit", "quota_exhausted"})
 
 
 class ChatClient(Protocol):
@@ -32,7 +35,7 @@ class MemberReply:
 class CouncilMember:
     config: MemberConfig
     primary_client: ChatClient
-    fallback_client: ChatClient | None = None
+    fallback_chain: list[tuple[FallbackEntry, ChatClient]] = field(default_factory=list)
 
     @property
     def name(self) -> str:
@@ -58,23 +61,27 @@ class CouncilMember:
                 model=self.config.model,
             )
         except OpenRouterError as exc:
-            if (
-                exc.kind == "rate_limit"
-                and self.fallback_client is not None
-                and self.config.fallback_provider is not None
-                and self.config.fallback_model is not None
-            ):
-                fb_resp = await self.fallback_client.chat(
-                    model=self.config.fallback_model,
-                    system=system,
-                    user=user,
-                    timeout=timeout,
-                    max_retries=1,
-                )
-                return MemberReply(
-                    text=fb_resp.text,
-                    provider=self.config.fallback_provider,
-                    via_fallback=True,
-                    model=self.config.fallback_model,
-                )
-            raise
+            if exc.kind not in FALLBACK_TRIGGERS:
+                raise
+            last: OpenRouterError = exc
+            for entry, client in self.fallback_chain:
+                try:
+                    fb_resp = await client.chat(
+                        model=entry.model,
+                        system=system,
+                        user=user,
+                        timeout=timeout,
+                        max_retries=1,
+                    )
+                    return MemberReply(
+                        text=fb_resp.text,
+                        provider=entry.provider,
+                        via_fallback=True,
+                        model=entry.model,
+                    )
+                except OpenRouterError as exc2:
+                    if exc2.kind in FALLBACK_TRIGGERS:
+                        last = exc2
+                        continue
+                    raise
+            raise last
