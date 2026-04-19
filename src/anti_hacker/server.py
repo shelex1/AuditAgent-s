@@ -26,7 +26,11 @@ def _make_services(project_root: Path, data_root: Path) -> tuple[ConsultService,
     config_path = Path(os.getenv("ANTI_HACKER_CONFIG", project_root / "config" / "council.toml"))
     cfg = load_config(config_path)
     clients: dict[str, OpenRouterClient] = {
-        p.name: OpenRouterClient(api_key=p.api_key, base_url=p.base_url)
+        p.name: OpenRouterClient(
+            api_key=p.api_key,
+            base_url=p.base_url,
+            empty_means_quota=p.empty_means_quota,
+        )
         for p in cfg.providers
     }
     cache = DebateCache(ttl_seconds=cfg.limits.cache_ttl_seconds)
