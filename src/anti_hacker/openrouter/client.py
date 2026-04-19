@@ -61,10 +61,9 @@ class OpenRouterClient:
                 {"role": "user", "content": user},
             ],
         }
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         url = f"{self._base_url}/chat/completions"
 
         effective_max = self._max_retries if max_retries is None else max_retries

@@ -355,3 +355,38 @@ async def test_empty_200_without_flag_raises_malformed():
     with pytest.raises(OpenRouterError) as exc:
         await client.chat(model="m", system="s", user="u", timeout=5)
     assert exc.value.kind == "malformed"
+
+
+@pytest.mark.asyncio
+async def test_empty_api_key_omits_authorization_header() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["has_auth"] = "authorization" in request.headers
+        return httpx.Response(200, json=chat_completion("ok"))
+
+    client = OpenRouterClient(
+        api_key="",
+        base_url="http://localhost:11434/v1",
+        transport=_transport(handler),
+    )
+    resp = await client.chat(model="m", system="s", user="u", timeout=5)
+    assert resp.text == "ok"
+    assert seen["has_auth"] is False
+
+
+@pytest.mark.asyncio
+async def test_nonempty_api_key_sends_authorization_header() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json=chat_completion("ok"))
+
+    client = OpenRouterClient(
+        api_key="sk-x",
+        base_url="https://x/api/v1",
+        transport=_transport(handler),
+    )
+    await client.chat(model="m", system="s", user="u", timeout=5)
+    assert seen["auth"] == "Bearer sk-x"
