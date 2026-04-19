@@ -28,12 +28,19 @@ class ProviderConfig(BaseModel):
     empty_means_quota: bool = False
 
 
+class FallbackEntry(BaseModel):
+    provider: str
+    model: str
+
+
 class MemberConfig(BaseModel):
     name: str
     model: str
     role: Role
     timeout: int = Field(gt=0, le=600)
     provider: str | None = None               # resolved to providers[0].name if None
+    fallbacks: list[FallbackEntry] = []
+    # Legacy (deprecated, still accepted for back-compat):
     fallback_provider: str | None = None
     fallback_model: str | None = None
 
@@ -80,23 +87,35 @@ class Config(BaseModel):
                 m.provider = default_provider
             if m.provider not in known:
                 raise ValueError(f"unknown provider '{m.provider}' on member '{m.name}'")
-            if m.fallback_provider is not None:
-                if m.fallback_provider not in known:
-                    raise ValueError(
-                        f"unknown provider '{m.fallback_provider}' in fallback_provider on member '{m.name}'"
-                    )
-                if m.fallback_provider == m.provider:
-                    raise ValueError(
-                        f"member '{m.name}' fallback_provider is the same provider as primary"
-                    )
-                if not m.fallback_model:
-                    raise ValueError(
-                        f"member '{m.name}' sets fallback_provider but no fallback_model"
-                    )
-            elif m.fallback_model is not None:
+
+            legacy_set = m.fallback_provider is not None or m.fallback_model is not None
+            if legacy_set and m.fallbacks:
                 raise ValueError(
-                    f"member '{m.name}' sets fallback_model without fallback_provider"
+                    f"member '{m.name}' cannot mix legacy fallback_provider/fallback_model with fallbacks list"
                 )
+            if legacy_set:
+                if m.fallback_provider is None or not m.fallback_model:
+                    raise ValueError(
+                        f"member '{m.name}' legacy fallback requires both fallback_provider and fallback_model"
+                    )
+                m.fallbacks = [FallbackEntry(provider=m.fallback_provider, model=m.fallback_model)]
+                # Clear legacy fields so nothing downstream reads them.
+                m.fallback_provider = None
+                m.fallback_model = None
+
+            for idx, entry in enumerate(m.fallbacks):
+                if entry.provider not in known:
+                    raise ValueError(
+                        f"unknown provider '{entry.provider}' in fallbacks[{idx}] on member '{m.name}'"
+                    )
+                if entry.provider == m.provider:
+                    raise ValueError(
+                        f"member '{m.name}' fallbacks[{idx}] uses the same provider as primary"
+                    )
+                if not entry.model:
+                    raise ValueError(
+                        f"member '{m.name}' fallbacks[{idx}] has empty model"
+                    )
 
         if self.cartographer.provider is None:
             self.cartographer.provider = default_provider

@@ -168,8 +168,9 @@ def test_fallback_fields_round_trip(tmp_path, monkeypatch):
     )
     cfg = load_config(_write(tmp_path, PROVIDERS_BLOCK + members_with_fallback))
     m1 = next(m for m in cfg.members if m.name == "m1")
-    assert m1.fallback_provider == "modal"
-    assert m1.fallback_model == "zai-org/GLM-5.1-FP8"
+    assert len(m1.fallbacks) == 1
+    assert m1.fallbacks[0].provider == "modal"
+    assert m1.fallbacks[0].model == "zai-org/GLM-5.1-FP8"
 
 
 def test_fallback_provider_must_exist(tmp_path, monkeypatch):
@@ -250,6 +251,256 @@ base_url = "http://localhost:11434/v1"
     ollama = next(p for p in cfg.providers if p.name == "ollama")
     assert ollama.api_key == ""
     assert ollama.api_key_env is None
+
+
+_THREE_PROVIDERS_BLOCK = """
+[[providers]]
+name = "openrouter"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[[providers]]
+name = "modal"
+base_url = "https://api.us-west-2.modal.direct/v1"
+api_key_env = "MODAL_API_KEY"
+
+[[providers]]
+name = "ollama"
+base_url = "http://localhost:11434/v1"
+"""
+
+_CONFIG_WITH_FALLBACKS_LIST = _THREE_PROVIDERS_BLOCK + """
+[[members]]
+name = "trinity-large"
+model = "arcee-ai/trinity-large-preview:free"
+role = "security-paranoid"
+timeout = 120
+provider = "openrouter"
+fallbacks = [
+  { provider = "modal",  model = "zai-org/GLM-5-FP8-2" },
+  { provider = "ollama", model = "minimax-m2.7:cloud" },
+]
+
+[[members]]
+name = "m2"
+model = "provider/m2:free"
+role = "pragmatic-engineer"
+timeout = 60
+
+[[members]]
+name = "m3"
+model = "provider/m3:free"
+role = "adversarial-critic"
+timeout = 60
+
+[[members]]
+name = "m4"
+model = "provider/m4:free"
+role = "code-quality"
+timeout = 60
+
+[[members]]
+name = "m5"
+model = "provider/m5:free"
+role = "refactorer"
+timeout = 60
+
+[cartographer]
+model = "provider/fast:free"
+timeout = 120
+
+[limits]
+max_files_scan = 50
+max_additional_file_requests = 3
+debate_timeout = 180
+per_member_timeout_fallback = 90
+cache_ttl_seconds = 600
+max_file_size_bytes = 51200
+"""
+
+_CONFIG_WITH_LEGACY_FALLBACK = PROVIDERS_BLOCK + """
+[[members]]
+name = "m1"
+model = "provider/m1:free"
+role = "security-paranoid"
+timeout = 90
+fallback_provider = "modal"
+fallback_model = "zai-org/GLM-5-FP8-2"
+
+[[members]]
+name = "m2"
+model = "provider/m2:free"
+role = "pragmatic-engineer"
+timeout = 60
+
+[[members]]
+name = "m3"
+model = "provider/m3:free"
+role = "adversarial-critic"
+timeout = 60
+
+[[members]]
+name = "m4"
+model = "provider/m4:free"
+role = "code-quality"
+timeout = 60
+
+[[members]]
+name = "m5"
+model = "provider/m5:free"
+role = "refactorer"
+timeout = 60
+
+[cartographer]
+model = "provider/fast:free"
+timeout = 120
+
+[limits]
+max_files_scan = 50
+max_additional_file_requests = 3
+debate_timeout = 180
+per_member_timeout_fallback = 90
+cache_ttl_seconds = 600
+max_file_size_bytes = 51200
+"""
+
+_CONFIG_WITH_BOTH_LEGACY_AND_LIST = PROVIDERS_BLOCK + """
+[[members]]
+name = "m1"
+model = "provider/m1:free"
+role = "security-paranoid"
+timeout = 90
+fallback_provider = "modal"
+fallback_model = "zai-org/GLM-5-FP8-2"
+fallbacks = [
+  { provider = "modal", model = "zai-org/GLM-5-FP8-2" },
+]
+
+[[members]]
+name = "m2"
+model = "provider/m2:free"
+role = "pragmatic-engineer"
+timeout = 60
+
+[[members]]
+name = "m3"
+model = "provider/m3:free"
+role = "adversarial-critic"
+timeout = 60
+
+[[members]]
+name = "m4"
+model = "provider/m4:free"
+role = "code-quality"
+timeout = 60
+
+[[members]]
+name = "m5"
+model = "provider/m5:free"
+role = "refactorer"
+timeout = 60
+
+[cartographer]
+model = "provider/fast:free"
+timeout = 120
+
+[limits]
+max_files_scan = 50
+max_additional_file_requests = 3
+debate_timeout = 180
+per_member_timeout_fallback = 90
+cache_ttl_seconds = 600
+max_file_size_bytes = 51200
+"""
+
+_CONFIG_WITH_FALLBACK_TO_UNKNOWN_PROVIDER = PROVIDERS_BLOCK + """
+[[members]]
+name = "m1"
+model = "provider/m1:free"
+role = "security-paranoid"
+timeout = 90
+fallbacks = [
+  { provider = "ghost", model = "x/y" },
+]
+
+[[members]]
+name = "m2"
+model = "provider/m2:free"
+role = "pragmatic-engineer"
+timeout = 60
+
+[[members]]
+name = "m3"
+model = "provider/m3:free"
+role = "adversarial-critic"
+timeout = 60
+
+[[members]]
+name = "m4"
+model = "provider/m4:free"
+role = "code-quality"
+timeout = 60
+
+[[members]]
+name = "m5"
+model = "provider/m5:free"
+role = "refactorer"
+timeout = 60
+
+[cartographer]
+model = "provider/fast:free"
+timeout = 120
+
+[limits]
+max_files_scan = 50
+max_additional_file_requests = 3
+debate_timeout = 180
+per_member_timeout_fallback = 90
+cache_ttl_seconds = 600
+max_file_size_bytes = 51200
+"""
+
+
+def test_member_fallbacks_list_loads(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    monkeypatch.setenv("MODAL_API_KEY", "mk")
+    toml = tmp_path / "council.toml"
+    toml.write_text(_CONFIG_WITH_FALLBACKS_LIST)
+    cfg = load_config(toml)
+    m = next(m for m in cfg.members if m.name == "trinity-large")
+    assert len(m.fallbacks) == 2
+    assert m.fallbacks[0].provider == "modal"
+    assert m.fallbacks[1].provider == "ollama"
+
+
+def test_legacy_fallback_fields_synthesize_one_element_list(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    monkeypatch.setenv("MODAL_API_KEY", "mk")
+    toml = tmp_path / "council.toml"
+    toml.write_text(_CONFIG_WITH_LEGACY_FALLBACK)
+    cfg = load_config(toml)
+    m = cfg.members[0]
+    assert len(m.fallbacks) == 1
+    assert m.fallbacks[0].provider == "modal"
+    assert m.fallbacks[0].model == "zai-org/GLM-5-FP8-2"
+
+
+def test_mixing_legacy_and_fallbacks_list_rejected(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    monkeypatch.setenv("MODAL_API_KEY", "mk")
+    toml = tmp_path / "council.toml"
+    toml.write_text(_CONFIG_WITH_BOTH_LEGACY_AND_LIST)
+    with pytest.raises(ConfigError, match="cannot mix"):
+        load_config(toml)
+
+
+def test_fallback_entry_unknown_provider_rejected(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    monkeypatch.setenv("MODAL_API_KEY", "mk")
+    toml = tmp_path / "council.toml"
+    toml.write_text(_CONFIG_WITH_FALLBACK_TO_UNKNOWN_PROVIDER)
+    with pytest.raises(ConfigError, match="unknown provider"):
+        load_config(toml)
 
 
 def test_provider_empty_means_quota_loads(tmp_path, monkeypatch):
