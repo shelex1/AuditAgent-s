@@ -1,6 +1,6 @@
 from typing import Literal, Optional
 
-ErrorKind = Literal["rate_limit", "timeout", "upstream", "malformed", "network"]
+ErrorKind = Literal["rate_limit", "quota_exhausted", "timeout", "upstream", "malformed", "network"]
 
 
 class AntiHackerError(Exception):
