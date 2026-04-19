@@ -1,7 +1,7 @@
 """Smoke-test every configured model. NOT part of pytest; run manually.
 
 Usage:
-    python scripts/smoke_test.py [path/to/council.toml] [--include-modal]
+    python scripts/smoke_test.py [path/to/council.toml] [--include-modal] [--include-ollama]
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from anti_hacker.config import load_config, provider_by_name
 from anti_hacker.openrouter.client import OpenRouterClient
 
 _MODAL_PROBE_MODEL = "zai-org/GLM-5.1-FP8"
+_OLLAMA_PROBE_MODEL = "minimax-m2.7:cloud"
 
 
 async def _probe(client: OpenRouterClient, model: str, timeout: int) -> tuple[str, bool, str]:
@@ -55,6 +56,34 @@ async def _probe_modal(cfg, toml_path: Path) -> int:
         return 1
 
 
+async def _probe_ollama(cfg, toml_path: Path) -> int:
+    """Single direct probe against the ollama provider. Returns 0 on success, 1 on failure."""
+    try:
+        p = provider_by_name(cfg, "ollama")
+    except Exception as exc:
+        print(f"[OLLAMA] ERROR — provider not found: {exc}")
+        return 1
+    client = OpenRouterClient(
+        api_key=p.api_key,
+        base_url=p.base_url,
+        empty_means_quota=p.empty_means_quota,
+    )
+    try:
+        resp = await client.chat(
+            model=_OLLAMA_PROBE_MODEL,
+            system="You are a terse assistant.",
+            user="Say 'ok'.",
+            timeout=60.0,
+            max_retries=1,
+        )
+        text = resp.text or ""
+        print(f"[OLLAMA] provider=ollama  model={_OLLAMA_PROBE_MODEL}  response={text[:80]!r}")
+        return 0
+    except Exception as exc:
+        print(f"[OLLAMA] ERROR — {exc}")
+        return 1
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser(
         description="Smoke-test every configured model.",
@@ -70,6 +99,12 @@ async def main() -> int:
         action="store_true",
         default=False,
         help="Also probe the modal provider directly (not part of the default run).",
+    )
+    parser.add_argument(
+        "--include-ollama",
+        action="store_true",
+        default=False,
+        help="Also probe the ollama provider directly (requires Ollama Desktop running).",
     )
     args = parser.parse_args()
 
@@ -94,6 +129,12 @@ async def main() -> int:
         print()
         modal_rc = await _probe_modal(cfg, toml_path)
         if modal_rc != 0:
+            fails += 1
+
+    if args.include_ollama:
+        print()
+        ollama_rc = await _probe_ollama(cfg, toml_path)
+        if ollama_rc != 0:
             fails += 1
 
     return 1 if fails else 0
