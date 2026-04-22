@@ -1,18 +1,21 @@
-# Fill in your 5-model council. Every member is used in every debate round.
-# Role values: security-paranoid | pragmatic-engineer | adversarial-critic | code-quality | refactorer
+# AntiHacker Council — example configuration.
+# Скопируйте этот файл как `config/council.toml` и отредактируйте под себя.
 #
-# Providers are declared as a registry. Each member picks its primary
-# `provider` by name and optionally declares an ordered `fallbacks` list —
-# the council walks the chain on `rate_limit` / `quota_exhausted` errors.
+# Роли участников: security-paranoid | pragmatic-engineer | adversarial-critic | code-quality | refactorer
+#
+# Провайдеры описаны в реестре [[providers]]. Каждый участник выбирает `provider`
+# по имени и (опционально) объявляет упорядоченный список `fallbacks` — совет
+# пройдёт по цепочке при ошибках `rate_limit` / `quota_exhausted`.
 
-# Provider registry
+# ---------- Реестр провайдеров ----------
+
 [[providers]]
 name = "openrouter"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
-# OpenRouter free tier sometimes returns 200 OK with an empty body when quota
-# is exhausted. This flag promotes that signal to a `quota_exhausted` error
-# kind so the fallback chain engages instead of abstaining.
+# OpenRouter на бесплатном тарифе иногда отвечает 200 OK с пустым телом,
+# когда квота исчерпана. Флаг превращает этот сигнал в ошибку
+# `quota_exhausted`, чтобы совет перешёл на fallback, а не "молчал".
 empty_means_quota = true
 
 [[providers]]
@@ -23,71 +26,85 @@ api_key_env = "MODAL_API_KEY"
 [[providers]]
 name = "ollama"
 base_url = "http://localhost:11434/v1"
-# api_key_env omitted — local Ollama Desktop needs no key.
+# api_key_env не нужен — локальный Ollama Desktop работает без ключа.
+
+# ---------- Участники совета ----------
+# Ниже — пример реального 5-модельного совета на бесплатных моделях OpenRouter
+# с fallback'ами на Modal (платные) и Ollama (локальный). Замените ID моделей
+# на те, что вам доступны на ваших тарифах.
+
+# ПРИМЕЧАНИЕ: некоторые модели помечены как :free временно. Проверяйте
+# актуальность на https://openrouter.ai/models перед запуском.
 
 [[members]]
-name = "model-1"
-model = "provider/model-id:free"
+name = "trinity-large"
+model = "arcee-ai/trinity-large-preview:free"
 role = "security-paranoid"
+timeout = 120
+provider = "openrouter"
+fallbacks = [
+  { provider = "modal",  model = "zai-org/GLM-5-FP8-2" },
+  { provider = "ollama", model = "minimax-m2.7:cloud" },
+]
+
+[[members]]
+name = "glm-4.5-air"
+model = "z-ai/glm-4.5-air:free"
+role = "pragmatic-engineer"
 timeout = 90
 provider = "openrouter"
 fallbacks = [
-  { provider = "modal",  model = "provider/paid-model" },
-  { provider = "ollama", model = "local-model:cloud" },
+  { provider = "ollama", model = "minimax-m2.7:cloud" },
+  { provider = "modal",  model = "zai-org/GLM-5-FP8-2" },
 ]
 
 [[members]]
-name = "model-2"
-model = "provider/model-id:free"
-role = "pragmatic-engineer"
-timeout = 60
-provider = "openrouter"
-fallbacks = [
-  { provider = "ollama", model = "local-model:cloud" },
-  { provider = "modal",  model = "provider/paid-model" },
-]
-
-[[members]]
-name = "model-3"
-model = "provider/model-id:free"
+name = "gpt-oss-120b"
+model = "openai/gpt-oss-120b:free"
 role = "adversarial-critic"
-timeout = 60
+timeout = 120
 provider = "openrouter"
 fallbacks = [
-  { provider = "modal",  model = "provider/paid-model" },
-  { provider = "ollama", model = "local-model:cloud" },
+  { provider = "modal",  model = "zai-org/GLM-5-FP8-2" },
+  { provider = "ollama", model = "minimax-m2.7:cloud" },
 ]
 
 [[members]]
-name = "model-4"
-model = "provider/model-id:free"
+name = "nemotron-nano"
+model = "nvidia/nemotron-3-nano-30b-a3b:free"
 role = "code-quality"
 timeout = 60
 provider = "openrouter"
 fallbacks = [
-  { provider = "ollama", model = "local-model:cloud" },
-  { provider = "modal",  model = "provider/paid-model" },
+  { provider = "ollama", model = "minimax-m2.7:cloud" },
+  { provider = "modal",  model = "zai-org/GLM-5-FP8-2" },
 ]
 
 [[members]]
-name = "model-5"
-model = "provider/model-id:free"
+name = "nemotron-super"
+model = "nvidia/nemotron-3-super-120b-a12b:free"
 role = "refactorer"
-timeout = 60
+timeout = 120
 provider = "openrouter"
 fallbacks = [
-  { provider = "modal",  model = "provider/paid-model" },
-  { provider = "ollama", model = "local-model:cloud" },
+  { provider = "modal",  model = "zai-org/GLM-5-FP8-2" },
+  { provider = "ollama", model = "minimax-m2.7:cloud" },
 ]
 
+# ---------- Картограф ----------
+# Быстрая модель, которая оценивает файлы по риску перед глубоким ревью.
+# В этом примере переиспользуется nemotron-nano как самая лёгкая из совета.
+
 [cartographer]
-model = "provider/fast-model:free"
-timeout = 120
+model = "nvidia/nemotron-3-nano-30b-a3b:free"
+timeout = 90
+
+# ---------- Лимиты ----------
 
 [limits]
 max_files_scan = 50
 max_additional_file_requests = 3
-debate_timeout = 180
-per_member_timeout_fallback = 90
+debate_timeout = 300
+per_member_timeout_fallback = 120
 cache_ttl_seconds = 600
 max_file_size_bytes = 51200
