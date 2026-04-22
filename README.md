@@ -1,39 +1,569 @@
-# AntiHacker Council
+# AuditAgent-s — Совет ИИ-аудиторов для Claude Code
 
-Python MCP server that coordinates 5 free OpenRouter models through 3 debate rounds and returns compact verdicts plus unified-diff patches for Claude Code to review.
+> **MCP-сервер, который собирает "совет" из 5 разных языковых моделей,
+> проводит между ними трёхраундовые дебаты над вашим кодом и возвращает
+> в Claude Code компактный вердикт и готовые патчи в формате unified-diff.**
 
-> **Status:** in-progress implementation. The `anti-hacker` command (step 5 below) becomes functional after the full server is wired up per the plan; until then, `pip install -e .[dev]` and `pytest` work, but launching the MCP server is not yet supported.
+`AuditAgent-s` превращает code review из монолога одной модели в
+коллегиальное обсуждение пятью. Каждый участник играет свою роль
+(параноик по безопасности, прагматичный инженер, критик, ревьюер
+качества, рефакторер) — они спорят, уточняют факты, голосуют, и только
+после этого вы получаете итог.
 
-## Setup
+---
 
-1. Install: `pip install -e .[dev]`
-2. Copy `.env.example` to `.env` and set `OPENROUTER_API_KEY` (primary provider) and `MODAL_API_KEY` (fallback provider — obtain from [Modal Research dashboard](https://modal.com))
-3. Copy `config/council.example.toml` to `config/council.toml` and fill in your 5-model council
-4. Run tests: `pytest`
-5. Register with Claude Code by adding to your MCP config:
-   ```json
-   {
-     "anti-hacker": {
-       "command": "anti-hacker",
-       "args": []
-     }
-   }
+## Оглавление
+
+- [Что это и зачем](#что-это-и-зачем)
+- [Как это работает](#как-это-работает)
+- [Возможности (MCP-инструменты)](#возможности-mcp-инструменты)
+- [Провайдеры и модели](#провайдеры-и-модели)
+- [Преимущества](#преимущества)
+- [Требования](#требования)
+- [Установка](#установка)
+- [Настройка API-ключей](#настройка-api-ключей)
+- [Настройка совета из 5 моделей](#настройка-совета-из-5-моделей)
+- [Регистрация MCP в Claude Code](#регистрация-mcp-в-claude-code)
+- [Проверка работоспособности](#проверка-работоспособности)
+- [Примеры использования](#примеры-использования)
+- [Структура проекта](#структура-проекта)
+- [FAQ](#faq)
+
+---
+
+## Что это и зачем
+
+Одна модель может ошибиться, упустить уязвимость, выдать галлюцинацию
+или слишком уверенно защищать свой вариант. **Совет из пяти независимых
+моделей** с разными ролями компенсирует слабости каждой:
+
+- один — подозрительный параноик (ищет RCE, SQL-инъекции, утечки),
+- другой — прагматик (думает о maintainability и стоимости),
+- третий — адверсариальный критик (намеренно ищет дыры в чужих аргументах),
+- четвёртый — следит за качеством кода и стилем,
+- пятый — рефакторер (предлагает упрощения).
+
+Каждый видит код, **все три раунда видят аргументы остальных**, и на
+выходе вы получаете не одно мнение, а агрегированный вердикт с
+голосованием.
+
+Сервер выполнен как **MCP-сервер** (Model Context Protocol), поэтому
+подключается к Claude Code одной строкой конфига — и Claude получает
+пять новых инструментов: `consult_council`, `scan_project`,
+`investigate_bug`, `get_debate_log`, `list_proposals`.
+
+---
+
+## Как это работает
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                       Claude Code (CLI)                      │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ MCP stdio
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│              anti-hacker (Python MCP server)                 │
+│                                                              │
+│   ┌──────────────┐   ┌────────────────┐   ┌──────────────┐   │
+│   │ Cartographer │──▶│   Orchestra    │──▶│  Aggregator  │   │
+│   │ (скоринг     │   │  (3 раунда     │   │  (вердикт +  │   │
+│   │  файлов по   │   │   дебатов      │   │   unified-   │   │
+│   │   риску)     │   │   × 5 моделей) │   │   diff)      │   │
+│   └──────────────┘   └────────┬───────┘   └──────────────┘   │
+│                               │                              │
+└───────────────────────────────┼──────────────────────────────┘
+                                │ HTTP (OpenAI-совместимый API)
+                 ┌──────────────┼───────────────┐
+                 ▼              ▼               ▼
+          ┌──────────┐   ┌───────────┐   ┌─────────────┐
+          │OpenRouter│   │   Modal   │   │   Ollama    │
+          │ (free)   │   │ (paid,    │   │  (локально, │
+          │          │   │  fallback)│   │   fallback) │
+          └──────────┘   └───────────┘   └─────────────┘
+```
+
+**Цепочка обработки одного запроса:**
+
+1. **Cartographer** — быстрая лёгкая модель прочитывает карту
+   репозитория и ранжирует файлы по риску.
+2. **Orchestra** — для каждого из 5 участников совета запускаются
+   3 раунда:
+   - Раунд 1 — независимый первичный анализ.
+   - Раунд 2 — каждый видит ответы остальных и может пересмотреть позицию.
+   - Раунд 3 — финальный вердикт с голосованием.
+3. **Fallback-цепочка** — если OpenRouter вернул `rate_limit` или
+   `quota_exhausted` (включая характерный "200 OK с пустым телом"),
+   вызов автоматически уходит к следующему провайдеру в цепочке
+   (Modal → Ollama).
+4. **Aggregator** — собирает позиции, считает голоса, формирует
+   unified-diff патч, который можно сразу применить через `git apply`.
+5. **Debate log** — полный JSON-лог дебатов сохраняется в `debates/`
+   с уникальным `debate_id` для последующего разбора.
+
+---
+
+## Возможности (MCP-инструменты)
+
+После подключения к Claude Code становятся доступны **5 инструментов:**
+
+| Инструмент | Назначение |
+|---|---|
+| `consult_council` | Трёхраундовые дебаты 5 моделей по конкретным файлам. Режимы: `review`, `security`, `refactor`, `free`. |
+| `scan_project` | Картограф ранжирует проект по риску, затем глубокий ревью топ-N самых рискованных файлов. Фокусы: `security`, `quality`, `perf`, `all`. |
+| `investigate_bug` | Дебаты с гипотезами для поиска корневой причины бага. Принимает симптом, стек-трейс, шаги воспроизведения. |
+| `get_debate_log` | Полный JSON-лог дебатов по `debate_id` — все реплики всех раундов. |
+| `list_proposals` | Список сохранённых `.patch`-файлов с метаданными, ожидающих ручного применения. |
+
+---
+
+## Провайдеры и модели
+
+Архитектура поддерживает **три типа провайдеров** одновременно, каждый —
+через OpenAI-совместимый API. Реализация провайдеров лежит в одном
+универсальном клиенте `src/anti_hacker/openrouter/client.py` — меняется
+только `base_url` и опциональный API-ключ.
+
+### 1. OpenRouter — основной (бесплатные модели)
+
+[openrouter.ai](https://openrouter.ai) — агрегатор, дающий доступ к
+десяткам моделей через один API-ключ. Многие модели доступны с тегом
+`:free` без оплаты.
+
+- **Один ключ OpenRouter покрывает все 5 участников совета** — вам НЕ
+  нужны 5 отдельных ключей. Разные модели выбираются в
+  `config/council.toml`, а ключ читается из `OPENROUTER_API_KEY`.
+- Примеры бесплатных моделей, которые можно использовать (проверяйте
+  актуальность на [openrouter.ai/models](https://openrouter.ai/models),
+  так как список меняется):
+  - `z-ai/glm-4.5-air:free`
+  - `openai/gpt-oss-120b:free`
+  - `nvidia/nemotron-3-nano-30b-a3b:free`
+  - `nvidia/nemotron-3-super-120b-a12b:free`
+  - `arcee-ai/trinity-large-preview:free`
+- Есть характерная особенность: при исчерпании квоты OpenRouter иногда
+  возвращает `HTTP 200 OK` с **пустым телом**. У нас это распознаётся
+  как ошибка `quota_exhausted` (флаг `empty_means_quota = true`) и
+  автоматически активирует fallback.
+
+### 2. Modal — платный fallback (опционально)
+
+[modal.com](https://modal.com) — облачная inference-платформа с
+собственными моделями (например, `zai-org/GLM-5-FP8-2`). Используется
+как запасной вариант, когда OpenRouter упёрся в лимиты.
+
+Нужен отдельный ключ `MODAL_API_KEY` из дашборда Modal Research. Если
+вы не хотите платные fallback'и — оставьте `MODAL_API_KEY` пустым и
+уберите `modal` из `fallbacks` в `council.toml`.
+
+### 3. Ollama — локальный fallback (опционально, бесплатно)
+
+Ollama — локальная inference-платформа. Запускается через
+[Ollama Desktop](https://ollama.com) и слушает на
+`http://localhost:11434/v1` (OpenAI-совместимый endpoint).
+
+- **API-ключ не нужен** — локальный сервер без аутентификации.
+- Поддерживаются и обычные модели (`llama3.1`, `qwen2.5` и т.д.), и
+  облачные модели через Ollama Cloud (например, `minimax-m2.7:cloud`).
+- Реализация — тот же `OpenRouterClient` с другим `base_url`;
+  отдельного модуля нет.
+
+### Цепочка fallback
+
+Каждый участник совета в `council.toml` объявляет **упорядоченный список
+fallback'ов**. Например:
+
+```toml
+[[members]]
+name = "glm-4.5-air"
+model = "z-ai/glm-4.5-air:free"
+provider = "openrouter"
+fallbacks = [
+  { provider = "ollama", model = "minimax-m2.7:cloud" },
+  { provider = "modal",  model = "zai-org/GLM-5-FP8-2" },
+]
+```
+
+Если `openrouter` вернул `rate_limit` или `quota_exhausted`, совет
+пробует `ollama`, затем `modal`, и только если всё упало — участник
+пропускает раунд.
+
+---
+
+## Преимущества
+
+- **Пять мнений вместо одного.** Меньше риск галлюцинации или слепого
+  пятна у конкретной модели.
+- **Три раунда дебатов.** Модели видят чужие аргументы и пересматривают
+  свои позиции — итог обычно сильнее любого одиночного ответа.
+- **Роли участников.** Каждая модель работает с уклоном в свою
+  специализацию (security / pragmatism / criticism / quality /
+  refactoring).
+- **Готовые патчи.** На выходе — не пересказ в словах, а
+  `unified-diff`, который применяется через `git apply`.
+- **Бесплатно по умолчанию.** OpenRouter free tier + Ollama локально —
+  можно запуститься вообще без единого платного ключа.
+- **Прозрачность.** Каждый дебат сохраняется в `debates/<debate_id>.json`
+  целиком — все реплики всех моделей всех раундов.
+- **Fallback-цепочка.** Автоматический обход rate-limit и исчерпания
+  квот без потери ответа.
+- **Кеш.** Повторяющиеся запросы не тратят квоту (`cache_ttl_seconds`).
+- **Полная изоляция секретов.** Ключи живут только в `.env`
+  (gitignore), никуда не логируются, не попадают в `debates/`.
+
+---
+
+## Требования
+
+- Python **3.11** или новее
+- Git
+- Аккаунт на [OpenRouter](https://openrouter.ai) (бесплатный)
+- Claude Code CLI (чтобы подключить MCP-сервер)
+- *Опционально:* Ollama Desktop для локального fallback
+- *Опционально:* ключ Modal Research для платного fallback
+
+---
+
+## Установка
+
+### 1. Клонируем репозиторий
+
+```bash
+git clone https://github.com/shelex1/AuditAgent-s.git
+cd AuditAgent-s
+```
+
+### 2. Создаём виртуальное окружение
+
+```bash
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
+```
+
+### 3. Ставим пакет
+
+```bash
+pip install -e .[dev]
+```
+
+Флаг `-e` ставит проект в editable-режиме; `[dev]` подтягивает
+зависимости для тестов.
+
+После установки в PATH появляется команда `anti-hacker` — именно её
+будет запускать Claude Code.
+
+---
+
+## Настройка API-ключей
+
+### Шаг 1. Скопировать шаблон
+
+```bash
+# Windows
+copy .env.example .env
+# macOS / Linux
+cp .env.example .env
+```
+
+### Шаг 2. Получить ключ OpenRouter (обязательно)
+
+1. Зарегистрируйтесь на [openrouter.ai](https://openrouter.ai).
+2. Откройте страницу [openrouter.ai/keys](https://openrouter.ai/keys).
+3. Нажмите **Create Key**, скопируйте значение (начинается с `sk-or-v1-...`).
+4. Вставьте его в `.env`:
+
+```env
+OPENROUTER_API_KEY=sk-or-v1-ваш-ключ-здесь
+```
+
+### Шаг 3. Получить ключ Modal (опционально, для fallback)
+
+1. Зарегистрируйтесь на [modal.com](https://modal.com).
+2. В дашборде Modal Research создайте API-ключ.
+3. Добавьте в `.env`:
+
+```env
+MODAL_API_KEY=modalresearch_ваш-ключ-здесь
+```
+
+Если Modal вам не нужен — **оставьте эту переменную пустой** и уберите
+все записи `{ provider = "modal", ... }` из `config/council.toml`.
+
+### Шаг 4. Настроить Ollama (опционально, бесплатно)
+
+1. Установите [Ollama Desktop](https://ollama.com/download).
+2. Запустите приложение — оно поднимет локальный сервер на
+   `http://localhost:11434`.
+3. Скачайте нужные модели, например:
+   ```bash
+   ollama pull llama3.1
+   ollama pull qwen2.5
    ```
+4. **Ключ не нужен** — Ollama читает запросы без аутентификации.
 
-See `docs/superpowers/specs/2026-04-16-anti-hacker-council-design.md` for design details.
+Итоговый `.env` в минимальном варианте (только OpenRouter):
 
-## First Run
+```env
+OPENROUTER_API_KEY=sk-or-v1-...
+MODAL_API_KEY=
+```
 
-After install, before first MCP use:
+---
 
-1. Fill in `config/council.toml` with your 5 model IDs and roles.
-2. Set `OPENROUTER_API_KEY` (primary) and `MODAL_API_KEY` (fallback — from Modal Research dashboard) in `.env`.
-3. Run the smoke test to verify every model responds:
-   ```
-   python scripts/smoke_test.py
-   ```
-4. Run the full test suite:
-   ```
-   pytest
-   ```
-5. Register in Claude Code MCP config and restart the CLI.
+## Настройка совета из 5 моделей
+
+Файл `config/council.toml` описывает совет. Его не создаёт установщик —
+нужно скопировать пример вручную:
+
+```bash
+# Windows
+copy config\council.example.toml config\council.toml
+# macOS / Linux
+cp config/council.example.toml config/council.toml
+```
+
+Откройте `config/council.toml` и при желании замените модели на те,
+которые вам доступны. Базовая структура:
+
+```toml
+# Реестр провайдеров — один ключ на провайдера
+[[providers]]
+name = "openrouter"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+empty_means_quota = true
+
+[[providers]]
+name = "modal"
+base_url = "https://api.us-west-2.modal.direct/v1"
+api_key_env = "MODAL_API_KEY"
+
+[[providers]]
+name = "ollama"
+base_url = "http://localhost:11434/v1"
+# api_key_env не указываем — Ollama без ключа
+
+# 5 участников совета — каждый со своей ролью
+[[members]]
+name = "model-1"
+model = "z-ai/glm-4.5-air:free"
+role = "security-paranoid"
+timeout = 120
+provider = "openrouter"
+fallbacks = [
+  { provider = "modal",  model = "zai-org/GLM-5-FP8-2" },
+  { provider = "ollama", model = "minimax-m2.7:cloud" },
+]
+
+# ... ещё 4 участника с ролями:
+# pragmatic-engineer, adversarial-critic, code-quality, refactorer
+```
+
+**Важные моменты:**
+
+- **Ровно 5 участников `[[members]]`.** Меньше/больше — ошибка конфига.
+- **Пять разных ролей.** Каждая должна быть из списка:
+  `security-paranoid`, `pragmatic-engineer`, `adversarial-critic`,
+  `code-quality`, `refactorer`.
+- **Желательно 5 разных моделей.** Одинаковые модели лишают совет
+  разнообразия мнений — это главная фишка подхода.
+- **Один ключ на провайдера, не на модель.** Все 5 участников совета на
+  OpenRouter ходят через **один и тот же** `OPENROUTER_API_KEY`.
+- Полный рабочий пример уже лежит в `config/council.example.toml`.
+
+---
+
+## Регистрация MCP в Claude Code
+
+Добавьте сервер в MCP-конфиг Claude Code:
+
+**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+**Linux:** `~/.config/Claude/claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "anti-hacker": {
+      "command": "anti-hacker",
+      "args": [],
+      "env": {
+        "ANTI_HACKER_PROJECT_ROOT": "C:\\path\\to\\your\\project"
+      }
+    }
+  }
+}
+```
+
+Либо через CLI Claude Code:
+
+```bash
+claude mcp add anti-hacker anti-hacker
+```
+
+Перезапустите Claude Code — в списке доступных MCP-инструментов
+появятся `consult_council`, `scan_project`, `investigate_bug`,
+`get_debate_log`, `list_proposals`.
+
+---
+
+## Проверка работоспособности
+
+### Запустить тесты
+
+```bash
+pytest
+```
+
+Должно пройти ~180 тестов без сетевых обращений — все внешние вызовы
+замоканы.
+
+### Smoke-test живых моделей
+
+Скрипт по очереди пингует каждую модель из вашего `council.toml`:
+
+```bash
+python scripts/smoke_test.py
+```
+
+Опциональные флаги:
+
+```bash
+# Дополнительно проверить Modal-провайдер
+python scripts/smoke_test.py --include-modal
+
+# Дополнительно проверить Ollama (Ollama Desktop должен быть запущен)
+python scripts/smoke_test.py --include-ollama
+```
+
+Вывод: `[OK]` или `[FAIL]` для каждой модели. Если видите `[FAIL]` с
+`quota_exhausted` — попробуйте позже или замените модель на другую
+`:free`.
+
+---
+
+## Примеры использования
+
+Внутри Claude Code после подключения MCP:
+
+```
+Используй инструмент consult_council для файла src/auth/login.py,
+режим security — найди потенциальные уязвимости.
+```
+
+```
+Запусти scan_project с фокусом security и max_files=20 — хочу обзор
+самых рискованных мест в проекте.
+```
+
+```
+Инструмент investigate_bug: симптом — "JWT-токен считается валидным
+после истечения срока". Файлы: src/auth/jwt.py, src/auth/middleware.py.
+```
+
+```
+Покажи get_debate_log для debate_id abc123 — хочу увидеть все реплики.
+```
+
+На выходе `consult_council` и `investigate_bug` отдают компактный JSON
+с вердиктом и ссылкой на `.patch`-файл в `council_proposals/`, который
+можно применить обычным `git apply`.
+
+---
+
+## Структура проекта
+
+```
+AuditAgent-s/
+├── src/anti_hacker/
+│   ├── server.py              # MCP stdio-сервер, регистрирует 5 инструментов
+│   ├── config.py              # Pydantic-схемы + загрузка council.toml и .env
+│   ├── errors.py              # Типизированные ошибки (quota_exhausted и др.)
+│   │
+│   ├── openrouter/
+│   │   └── client.py          # Универсальный OpenAI-совместимый HTTP-клиент
+│   │                          # (используется для OpenRouter, Modal, Ollama)
+│   │
+│   ├── council/
+│   │   ├── orchestra.py       # Оркестратор 3-раундовых дебатов
+│   │   ├── member.py          # Участник совета + логика fallback-цепочки
+│   │   ├── aggregator.py      # Агрегация реплик → вердикт + патч
+│   │   ├── prompts.py         # Системные промпты по ролям
+│   │   └── cache.py           # TTL-кеш дебатов
+│   │
+│   ├── scanners/
+│   │   ├── cartographer.py    # Скоринг файлов по риску
+│   │   └── file_filter.py     # Фильтр .gitignore, бинарников и т.п.
+│   │
+│   ├── tools/
+│   │   ├── consult.py         # Реализация consult_council
+│   │   ├── scan.py            # Реализация scan_project
+│   │   ├── investigate.py     # Реализация investigate_bug
+│   │   └── logs.py            # get_debate_log + list_proposals
+│   │
+│   └── io/
+│       ├── debate_log.py      # Персист JSON-логов дебатов
+│       └── proposals.py       # Сохранение .patch-файлов
+│
+├── config/
+│   ├── council.example.toml   # Пример конфига (в git)
+│   └── council.toml           # Ваш локальный конфиг (gitignored)
+│
+├── scripts/
+│   └── smoke_test.py          # Проверка всех моделей в council.toml
+│
+├── tests/                     # ~180 тестов, все с моками
+├── docs/superpowers/          # Дизайн-документы и планы реализации
+│
+├── .env.example               # Шаблон переменных окружения
+├── .env                       # Ваши ключи (gitignored)
+├── pyproject.toml             # Пакет + entry-point `anti-hacker`
+└── README.md                  # Этот файл
+```
+
+---
+
+## FAQ
+
+**В: Нужны ли мне 5 разных API-ключей?**
+О: Нет. Достаточно **одного** ключа OpenRouter — он даёт доступ ко всем
+5 моделям совета. Дополнительные ключи (Modal) нужны только если вы
+хотите платный fallback.
+
+**В: Можно ли вообще без платных провайдеров?**
+О: Да. Минимальная конфигурация — один ключ OpenRouter на бесплатных
+моделях. Для надёжности рекомендуется добавить локальный Ollama
+(тоже бесплатно).
+
+**В: Где отдельный модуль для Ollama?**
+О: Его нет — Ollama использует тот же `OpenRouterClient` с другим
+`base_url`. Это сознательный выбор: Ollama Desktop предоставляет
+OpenAI-совместимый endpoint, поэтому дублировать клиент нет смысла.
+
+**В: Что если OpenRouter вернёт пустой ответ?**
+О: Это особенность free tier при исчерпании квоты. Флаг
+`empty_means_quota = true` распознаёт это как ошибку `quota_exhausted`
+и активирует fallback-цепочку автоматически.
+
+**В: Где хранятся логи дебатов?**
+О: В `debates/<debate_id>.json` (gitignored). Полный JSON со всеми
+репликами всех раундов каждой модели.
+
+**В: Куда уходят патчи?**
+О: В `council_proposals/*.patch` (gitignored). Применяются вручную
+через `git apply council_proposals/<файл>.patch`.
+
+**В: Утекут ли мои ключи в логи?**
+О: Нет. Ключи читаются из `.env` один раз на старте, хранятся в памяти
+и **никогда** не пишутся в `debates/`, `council_proposals/` или
+стандартный лог.
+
+---
+
+## Лицензия и вклад
+
+Репозиторий публичный. Pull-request'ы приветствуются. При обнаружении
+проблем — открывайте issue.
