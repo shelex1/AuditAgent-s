@@ -105,7 +105,15 @@ base_url="https://openrouter.ai/api/v1"
         await send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
         resp = await recv_timeout()
         names = {t["name"] for t in resp["result"]["tools"]}
-        assert names == {"consult_council", "scan_project", "investigate_bug", "get_debate_log", "list_proposals"}
+        assert names == {
+            "consult_council",
+            "scan_project",
+            "investigate_bug",
+            "get_debate_log",
+            "list_proposals",
+            "sequential_thinking",
+            "get_thought_history",
+        }
     finally:
         proc.terminate()
         try:
