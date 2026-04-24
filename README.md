@@ -140,7 +140,7 @@
   - `openai/gpt-oss-120b:free`
   - `nvidia/nemotron-3-nano-30b-a3b:free`
   - `nvidia/nemotron-3-super-120b-a12b:free`
-  - `arcee-ai/trinity-large-preview:free`
+  - `nousresearch/hermes-3-llama-3.1-405b:free`
 - Есть характерная особенность: при исчерпании квоты OpenRouter иногда
   возвращает `HTTP 200 OK` с **пустым телом**. У нас это распознаётся
   как ошибка `quota_exhausted` (флаг `empty_means_quota = true`) и

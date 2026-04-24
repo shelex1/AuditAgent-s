@@ -37,8 +37,8 @@ base_url = "http://localhost:11434/v1"
 # актуальность на https://openrouter.ai/models перед запуском.
 
 [[members]]
-name = "trinity-large"
-model = "arcee-ai/trinity-large-preview:free"
+name = "hermes-3-405b"
+model = "nousresearch/hermes-3-llama-3.1-405b:free"
 role = "security-paranoid"
 timeout = 120
 provider = "openrouter"
