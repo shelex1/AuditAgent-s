@@ -31,6 +31,7 @@ def _make_services(project_root: Path, data_root: Path) -> tuple[ConsultService,
             api_key=p.api_key,
             base_url=p.base_url,
             empty_means_quota=p.empty_means_quota,
+            provider=p.name,
         )
         for p in cfg.providers
     }

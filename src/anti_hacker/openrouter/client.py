@@ -34,6 +34,7 @@ class OpenRouterClient:
         retry_backoff: Callable[[int], float] | None = None,
         max_retries: int = 3,
         empty_means_quota: bool = False,
+        provider: str = "openrouter",
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -43,6 +44,10 @@ class OpenRouterClient:
         )
         self._max_retries = max_retries
         self._empty_means_quota = empty_means_quota
+        self._provider = provider
+
+    def _err(self, message: str, *, kind) -> OpenRouterError:
+        return OpenRouterError(f"{self._provider}: {message}", kind=kind)
 
     async def chat(
         self,
@@ -95,22 +100,22 @@ class OpenRouterClient:
                             use_json_mode = False
                             continue
                         if self._empty_means_quota:
-                            raise OpenRouterError(
+                            raise self._err(
                                 "empty 200 treated as quota exhaustion",
                                 kind="quota_exhausted",
                             )
-                        raise OpenRouterError("malformed response: empty choices", kind="malformed")
+                        raise self._err("malformed response: empty choices", kind="malformed")
                     content = choices[0]["message"].get("content")
                     if not content:
                         if use_json_mode:
                             use_json_mode = False
                             continue
                         if self._empty_means_quota:
-                            raise OpenRouterError(
+                            raise self._err(
                                 "empty 200 content treated as quota exhaustion",
                                 kind="quota_exhausted",
                             )
-                        raise OpenRouterError("malformed response: empty content", kind="malformed")
+                        raise self._err("malformed response: empty content", kind="malformed")
                     return OpenRouterResponse(text=content, model=model)
                 if r.status_code == 400 and use_json_mode:
                     # Some free models reject response_format; retry without it
@@ -124,17 +129,17 @@ class OpenRouterClient:
                             sleep_override = float(retry_after)
                         except (TypeError, ValueError):
                             sleep_override = None
-                    last_exc = OpenRouterError(f"rate limit (attempt {attempt + 1})", kind="rate_limit")
+                    last_exc = self._err(f"rate limit (attempt {attempt + 1})", kind="rate_limit")
                 elif 500 <= r.status_code < 600:
-                    last_exc = OpenRouterError(f"upstream {r.status_code} (attempt {attempt + 1})", kind="upstream")
+                    last_exc = self._err(f"upstream {r.status_code} (attempt {attempt + 1})", kind="upstream")
                 else:
-                    raise OpenRouterError(f"unexpected status {r.status_code}: {r.text[:200]}", kind="upstream")
+                    raise self._err(f"unexpected status {r.status_code}: {r.text[:200]}", kind="upstream")
             except httpx.TimeoutException:
-                last_exc = OpenRouterError(f"timeout after {timeout}s (attempt {attempt + 1})", kind="timeout")
+                last_exc = self._err(f"timeout after {timeout}s (attempt {attempt + 1})", kind="timeout")
             except httpx.HTTPError as exc:
-                last_exc = OpenRouterError(f"network error: {exc}", kind="network")
+                last_exc = self._err(f"network error: {exc}", kind="network")
             except (KeyError, ValueError, IndexError) as exc:
-                raise OpenRouterError(f"malformed response: {exc}", kind="malformed") from exc
+                raise self._err(f"malformed response: {exc}", kind="malformed") from exc
 
             if attempt < effective_max - 1:
                 delay = sleep_override if sleep_override is not None else self._retry_backoff(attempt)
@@ -142,5 +147,5 @@ class OpenRouterClient:
             attempt += 1
 
         if last_exc is None:
-            raise OpenRouterError("retry loop exited without an exception (unreachable)", kind="upstream")
+            raise self._err("retry loop exited without an exception (unreachable)", kind="upstream")
         raise last_exc

@@ -124,7 +124,7 @@ class DebateOrchestra:
                 }
                 raw = reply.text
             except OpenRouterError as exc:
-                return member.name, None, f"openrouter: {exc}", None
+                return member.name, None, str(exc), None
             ok, payload, err = parse_member_json(raw)
             if not ok:
                 # repair retry
@@ -140,7 +140,7 @@ class DebateOrchestra:
                     }
                     raw2 = reply2.text
                 except OpenRouterError as exc:
-                    return member.name, None, f"openrouter(repair): {exc}", None
+                    return member.name, None, f"repair: {exc}", None
                 ok2, payload2, err2 = parse_member_json(raw2)
                 if not ok2:
                     return member.name, None, f"invalid_json: {err2}", None
