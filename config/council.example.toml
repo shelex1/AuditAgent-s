@@ -19,19 +19,21 @@ api_key_env = "OPENROUTER_API_KEY"
 empty_means_quota = true
 
 [[providers]]
-name = "modal"
-base_url = "https://api.us-west-2.modal.direct/v1"
-api_key_env = "MODAL_API_KEY"
-
-[[providers]]
 name = "ollama"
 base_url = "http://localhost:11434/v1"
 # api_key_env не нужен — локальный Ollama Desktop работает без ключа.
 
+# Опционально: LiteLLM Proxy для Anthropic/Gemini/Bedrock/Azure и т.д.
+# Подробнее см. раздел "LiteLLM Proxy as a provider" в README.
+# [[providers]]
+# name = "litellm"
+# base_url = "http://localhost:4000/v1"
+# api_key_env = "LITELLM_API_KEY"
+
 # ---------- Участники совета ----------
 # Ниже — пример реального 5-модельного совета на бесплатных моделях OpenRouter
-# с fallback'ами на Modal (платные) и Ollama (локальный). Замените ID моделей
-# на те, что вам доступны на ваших тарифах.
+# с fallback'ом на локальный Ollama. Замените ID моделей на те, что вам
+# доступны на ваших тарифах.
 
 # ПРИМЕЧАНИЕ: некоторые модели помечены как :free временно. Проверяйте
 # актуальность на https://openrouter.ai/models перед запуском.
@@ -43,7 +45,6 @@ role = "security-paranoid"
 timeout = 120
 provider = "openrouter"
 fallbacks = [
-  { provider = "modal",  model = "zai-org/GLM-5-FP8-2" },
   { provider = "ollama", model = "minimax-m2.7:cloud" },
 ]
 
@@ -55,7 +56,6 @@ timeout = 90
 provider = "openrouter"
 fallbacks = [
   { provider = "ollama", model = "minimax-m2.7:cloud" },
-  { provider = "modal",  model = "zai-org/GLM-5-FP8-2" },
 ]
 
 [[members]]
@@ -65,7 +65,6 @@ role = "adversarial-critic"
 timeout = 120
 provider = "openrouter"
 fallbacks = [
-  { provider = "modal",  model = "zai-org/GLM-5-FP8-2" },
   { provider = "ollama", model = "minimax-m2.7:cloud" },
 ]
 
@@ -77,7 +76,6 @@ timeout = 60
 provider = "openrouter"
 fallbacks = [
   { provider = "ollama", model = "minimax-m2.7:cloud" },
-  { provider = "modal",  model = "zai-org/GLM-5-FP8-2" },
 ]
 
 [[members]]
@@ -87,7 +85,6 @@ role = "refactorer"
 timeout = 120
 provider = "openrouter"
 fallbacks = [
-  { provider = "modal",  model = "zai-org/GLM-5-FP8-2" },
   { provider = "ollama", model = "minimax-m2.7:cloud" },
 ]
 

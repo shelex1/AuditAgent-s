@@ -76,11 +76,11 @@
                                 │ HTTP (OpenAI-совместимый API)
                  ┌──────────────┼───────────────┐
                  ▼              ▼               ▼
-          ┌──────────┐   ┌───────────┐   ┌─────────────┐
-          │OpenRouter│   │   Modal   │   │   Ollama    │
-          │ (free)   │   │ (paid,    │   │  (локально, │
-          │          │   │  fallback)│   │   fallback) │
-          └──────────┘   └───────────┘   └─────────────┘
+          ┌──────────┐   ┌─────────────┐   ┌──────────────┐
+          │OpenRouter│   │   Ollama    │   │  LiteLLM     │
+          │ (free)   │   │  (локально, │   │  Proxy       │
+          │          │   │   fallback) │   │  (опц.)      │
+          └──────────┘   └─────────────┘   └──────────────┘
 ```
 
 **Цепочка обработки одного запроса:**
@@ -95,7 +95,7 @@
 3. **Fallback-цепочка** — если OpenRouter вернул `rate_limit` или
    `quota_exhausted` (включая характерный "200 OK с пустым телом"),
    вызов автоматически уходит к следующему провайдеру в цепочке
-   (Modal → Ollama).
+   (по умолчанию — Ollama).
 4. **Aggregator** — собирает позиции, считает голоса, формирует
    unified-diff патч, который можно сразу применить через `git apply`.
 5. **Debate log** — полный JSON-лог дебатов сохраняется в `debates/`
@@ -146,17 +146,7 @@
   как ошибка `quota_exhausted` (флаг `empty_means_quota = true`) и
   автоматически активирует fallback.
 
-### 2. Modal — платный fallback (опционально)
-
-[modal.com](https://modal.com) — облачная inference-платформа с
-собственными моделями (например, `zai-org/GLM-5-FP8-2`). Используется
-как запасной вариант, когда OpenRouter упёрся в лимиты.
-
-Нужен отдельный ключ `MODAL_API_KEY` из дашборда Modal Research. Если
-вы не хотите платные fallback'и — оставьте `MODAL_API_KEY` пустым и
-уберите `modal` из `fallbacks` в `council.toml`.
-
-### 3. Ollama — локальный fallback (опционально, бесплатно)
+### 2. Ollama — локальный fallback (опционально, бесплатно)
 
 Ollama — локальная inference-платформа. Запускается через
 [Ollama Desktop](https://ollama.com) и слушает на
@@ -167,6 +157,99 @@ Ollama — локальная inference-платформа. Запускаетс
   облачные модели через Ollama Cloud (например, `minimax-m2.7:cloud`).
 - Реализация — тот же `OpenRouterClient` с другим `base_url`;
   отдельного модуля нет.
+
+### 3. LiteLLM Proxy as a provider (опционально)
+
+[LiteLLM](https://docs.litellm.ai) — универсальная прослойка, которая
+нормализует 100+ LLM-провайдеров за **одним OpenAI-совместимым
+endpoint'ом**. Нужен, если хочется собрать совет из нативных API,
+которые AntiHacker напрямую не знает — Anthropic Claude, Google Gemini,
+AWS Bedrock, Azure OpenAI, Vertex AI и т.д. Запускается как отдельный
+прокси-сервер; AntiHacker ходит в него как в обычный OpenAI-endpoint,
+так что **менять код не нужно**.
+
+**Шаг 1.** Установить LiteLLM Proxy (отдельно от AntiHacker):
+
+```bash
+pip install 'litellm[proxy]'
+```
+
+**Шаг 2.** Создать `litellm.yaml` рядом с проектом. Пример с Anthropic,
+Gemini и Bedrock:
+
+```yaml
+model_list:
+  # Anthropic Claude (native API, без OpenRouter-посредника)
+  - model_name: claude-sonnet
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-opus
+    litellm_params:
+      model: anthropic/claude-opus-4-7
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # Google Gemini
+  - model_name: gemini-pro
+    litellm_params:
+      model: gemini/gemini-2.0-pro
+      api_key: os.environ/GEMINI_API_KEY
+
+  # AWS Bedrock (ключи берутся из стандартных AWS_* переменных)
+  - model_name: bedrock-claude
+    litellm_params:
+      model: bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0
+      aws_region_name: us-east-1
+
+general_settings:
+  # master_key — это тот ключ, который AntiHacker будет слать в LiteLLM.
+  # Любая непустая строка; он НЕ уходит в Anthropic/Gemini/Bedrock.
+  master_key: sk-litellm-local
+```
+
+**Шаг 3.** Добавить ключи провайдеров и `LITELLM_API_KEY` в `.env`:
+
+```env
+LITELLM_API_KEY=sk-litellm-local
+ANTHROPIC_API_KEY=sk-ant-...
+GEMINI_API_KEY=...
+# Для Bedrock:
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+```
+
+**Шаг 4.** Запустить прокси (оставить висеть в отдельном терминале):
+
+```bash
+litellm --config litellm.yaml --port 4000
+```
+
+**Шаг 5.** Зарегистрировать LiteLLM в `config/council.toml` как ещё
+одного провайдера и назначить участнику. Поле `model` у члена совета
+должно совпадать с `model_name` из `litellm.yaml`, **не** с оригинальным
+ID модели:
+
+```toml
+[[providers]]
+name = "litellm"
+base_url = "http://localhost:4000/v1"
+api_key_env = "LITELLM_API_KEY"
+
+[[members]]
+name = "claude-sonnet"
+model = "claude-sonnet"          # ← это model_name из litellm.yaml
+role = "security-paranoid"
+timeout = 120
+provider = "litellm"
+fallbacks = [
+  { provider = "ollama", model = "minimax-m2.7:cloud" },
+]
+```
+
+Можно **смешивать** провайдеров: часть участников совета — на
+OpenRouter (бесплатные модели), часть — через LiteLLM (платные native
+API). Fallback'и работают одинаково.
 
 ### Цепочка fallback
 
@@ -180,13 +263,11 @@ model = "z-ai/glm-4.5-air:free"
 provider = "openrouter"
 fallbacks = [
   { provider = "ollama", model = "minimax-m2.7:cloud" },
-  { provider = "modal",  model = "zai-org/GLM-5-FP8-2" },
 ]
 ```
 
 Если `openrouter` вернул `rate_limit` или `quota_exhausted`, совет
-пробует `ollama`, затем `modal`, и только если всё упало — участник
-пропускает раунд.
+пробует `ollama`, и только если упал и он — участник пропускает раунд.
 
 ---
 
@@ -220,7 +301,8 @@ fallbacks = [
 - Аккаунт на [OpenRouter](https://openrouter.ai) (бесплатный)
 - Claude Code CLI (чтобы подключить MCP-сервер)
 - *Опционально:* Ollama Desktop для локального fallback
-- *Опционально:* ключ Modal Research для платного fallback
+- *Опционально:* LiteLLM Proxy для доступа к Anthropic / Gemini / Bedrock /
+  Azure (см. раздел «LiteLLM Proxy as a provider»)
 
 ---
 
@@ -279,20 +361,7 @@ cp .env.example .env
 OPENROUTER_API_KEY=sk-or-v1-ваш-ключ-здесь
 ```
 
-### Шаг 3. Получить ключ Modal (опционально, для fallback)
-
-1. Зарегистрируйтесь на [modal.com](https://modal.com).
-2. В дашборде Modal Research создайте API-ключ.
-3. Добавьте в `.env`:
-
-```env
-MODAL_API_KEY=modalresearch_ваш-ключ-здесь
-```
-
-Если Modal вам не нужен — **оставьте эту переменную пустой** и уберите
-все записи `{ provider = "modal", ... }` из `config/council.toml`.
-
-### Шаг 4. Настроить Ollama (опционально, бесплатно)
+### Шаг 3. Настроить Ollama (опционально, бесплатно)
 
 1. Установите [Ollama Desktop](https://ollama.com/download).
 2. Запустите приложение — оно поднимет локальный сервер на
@@ -304,11 +373,16 @@ MODAL_API_KEY=modalresearch_ваш-ключ-здесь
    ```
 4. **Ключ не нужен** — Ollama читает запросы без аутентификации.
 
+### Шаг 4. (опционально) LiteLLM Proxy для Anthropic / Gemini / Bedrock
+
+Если хочется собрать совет из нативных API (не только OpenRouter) —
+см. раздел «[LiteLLM Proxy as a provider](#3-litellm-proxy-as-a-provider-опционально)»:
+там пошаговая настройка с готовым `litellm.yaml`.
+
 Итоговый `.env` в минимальном варианте (только OpenRouter):
 
 ```env
 OPENROUTER_API_KEY=sk-or-v1-...
-MODAL_API_KEY=
 ```
 
 ---
@@ -337,11 +411,6 @@ api_key_env = "OPENROUTER_API_KEY"
 empty_means_quota = true
 
 [[providers]]
-name = "modal"
-base_url = "https://api.us-west-2.modal.direct/v1"
-api_key_env = "MODAL_API_KEY"
-
-[[providers]]
 name = "ollama"
 base_url = "http://localhost:11434/v1"
 # api_key_env не указываем — Ollama без ключа
@@ -354,7 +423,6 @@ role = "security-paranoid"
 timeout = 120
 provider = "openrouter"
 fallbacks = [
-  { provider = "modal",  model = "zai-org/GLM-5-FP8-2" },
   { provider = "ollama", model = "minimax-m2.7:cloud" },
 ]
 
@@ -432,9 +500,6 @@ python scripts/smoke_test.py
 Опциональные флаги:
 
 ```bash
-# Дополнительно проверить Modal-провайдер
-python scripts/smoke_test.py --include-modal
-
 # Дополнительно проверить Ollama (Ollama Desktop должен быть запущен)
 python scripts/smoke_test.py --include-ollama
 ```
@@ -563,7 +628,7 @@ AuditAgent-s/
 │   │
 │   ├── openrouter/
 │   │   └── client.py          # Универсальный OpenAI-совместимый HTTP-клиент
-│   │                          # (используется для OpenRouter, Modal, Ollama)
+│   │                          # (используется для OpenRouter, Ollama, LiteLLM Proxy)
 │   │
 │   ├── council/
 │   │   ├── orchestra.py       # Оркестратор 3-раундовых дебатов
@@ -608,8 +673,9 @@ AuditAgent-s/
 
 **В: Нужны ли мне 5 разных API-ключей?**
 О: Нет. Достаточно **одного** ключа OpenRouter — он даёт доступ ко всем
-5 моделям совета. Дополнительные ключи (Modal) нужны только если вы
-хотите платный fallback.
+5 моделям совета. Дополнительные ключи (Anthropic / Gemini / Bedrock
+через LiteLLM Proxy) нужны только если вы хотите native API нужных
+вендоров вместо OpenRouter.
 
 **В: Можно ли вообще без платных провайдеров?**
 О: Да. Минимальная конфигурация — один ключ OpenRouter на бесплатных
